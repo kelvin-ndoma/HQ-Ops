@@ -22,6 +22,16 @@ export function invitationLinksAreVisible() {
   return process.env.NODE_ENV !== "production";
 }
 
+export async function deliverProposal(input: { to: string; subject: string; text: string; url: string }) {
+  if (!process.env.EMAIL_PROVIDER) {
+    if (process.env.NODE_ENV === "production") return "skipped" as const;
+    console.info(`HQ development proposal for ${input.to}: ${input.url}`);
+    return "development" as const;
+  }
+  const result = await configuredProvider.send({ to: input.to, subject: input.subject, text: input.text });
+  return result === "sent" ? ("provider" as const) : ("skipped" as const);
+}
+
 export async function deliverInvitation(input: { to: string; name: string; url: string }) {
   if (process.env.NODE_ENV === "production") {
     await configuredProvider.send({

@@ -69,7 +69,11 @@ export async function commandCentre(actor: SessionUser) {
   const todayTasks = tasks
     .filter((task) => task.dueAt && new Date(task.dueAt) <= new Date(now.getTime() + 24 * 60 * 60 * 1000))
     .sort((a, b) => (a.priority === "urgent" ? -1 : 1) - (b.priority === "urgent" ? -1 : 1));
-  const attention: { id: string; title: string; detail: string; href: string; tone: "bad" | "warn" }[] = [];
+  const clientNames = new Map((await Client.find({
+    _id: { $in: [...enquiries, ...bookings, ...quotes, ...events].map((row) => row.clientId) },
+  }).select("name").lean()).map((client) => [sid(client._id), client.name]));
+  const enquiryNames = new Map(enquiries.map((enquiry) => [sid(enquiry._id), enquiry.contact?.fullName || clientNames.get(sid(enquiry.clientId)) || ""]));
+  const attention: { id: string; title: string; detail: string; name: string; href: string; tone: "bad" | "warn" }[] = [];
   for (const enquiry of enquiries) {
     const flags = enquiryFlags({
       status: enquiry.stage as EnquiryStatus,
@@ -84,7 +88,8 @@ export async function commandCentre(actor: SessionUser) {
       attention.push({
         id: sid(enquiry._id),
         title: `Follow-up overdue · ${enquiry.reference}`,
-        detail: enquiry.contact?.fullName || "Enquiry",
+        detail: "",
+        name: enquiryNames.get(sid(enquiry._id)) || "",
         href: `/enquiries/${enquiry._id}`,
         tone: "bad",
       });
@@ -92,7 +97,8 @@ export async function commandCentre(actor: SessionUser) {
       attention.push({
         id: `gap-${enquiry._id}`,
         title: `${flags[0]} · ${enquiry.reference}`,
-        detail: enquiry.contact?.fullName || "",
+        detail: "",
+        name: enquiryNames.get(sid(enquiry._id)) || "",
         href: `/enquiries/${enquiry._id}`,
         tone: "warn",
       });
@@ -104,6 +110,7 @@ export async function commandCentre(actor: SessionUser) {
         id: sid(quote._id),
         title: `Quotation needs a follow-up · ${quote.reference}`,
         detail: quote.status,
+        name: (quote.enquiryId && enquiryNames.get(sid(quote.enquiryId))) || clientNames.get(sid(quote.clientId)) || "",
         href: `/quotations/${quote._id}`,
         tone: "warn",
       });
@@ -115,6 +122,7 @@ export async function commandCentre(actor: SessionUser) {
         attention.push({
           id: `dep-${booking._id}`,
           title: `Deposit outstanding · ${booking.reference}`,
+          name: (booking.enquiryId && enquiryNames.get(sid(booking.enquiryId))) || clientNames.get(sid(booking.clientId)) || "",
           detail: formatKsh(Math.max(0, booking.depositRequiredCents - booking.depositReceivedCents)),
           href: `/bookings/${booking._id}`,
           tone: "warn",
@@ -125,6 +133,7 @@ export async function commandCentre(actor: SessionUser) {
       attention.push({
         id: `bal-${booking._id}`,
         title: `Outstanding balance · ${booking.reference}`,
+        name: (booking.enquiryId && enquiryNames.get(sid(booking.enquiryId))) || clientNames.get(sid(booking.clientId)) || "",
         detail: formatKsh(booking.outstandingCents),
         href: `/bookings/${booking._id}`,
         tone: booking.endAt && new Date(booking.endAt) < now ? "bad" : "warn",
@@ -136,6 +145,7 @@ export async function commandCentre(actor: SessionUser) {
       id: sid(item._id),
       title: `Inventory shortage · ${item.name}`,
       detail: `${item.quantityOnHand - item.quantityReserved - item.quantityCheckedOut} available`,
+      name: "",
       href: `/inventory/${item._id}`,
       tone: "bad",
     });
@@ -146,11 +156,11 @@ export async function commandCentre(actor: SessionUser) {
       id: sid(vendor._id),
       title: "Vendor not confirmed",
       detail: vendor.service,
+      name: "",
       href: `/events/${vendor.eventId}`,
       tone: "warn",
     });
   }
-  const clientNames = new Map((await Client.find({ _id: { $in: events.map((event) => event.clientId) } }).select("name").lean()).map((client) => [sid(client._id), client.name]));
   return {
     kpis: {
       newEnquiries: enquiries.filter((enquiry) => enquiry.stage === "new").length,

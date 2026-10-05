@@ -568,7 +568,11 @@ export async function listPipeline() {
     : [];
   const quoted = new Map(versions.map((version) => [`${version.quotationId}:${version.version}`, version.totalCents || 0]));
   const quoteValue = new Map<string, number>();
-  for (const quote of quotes) quoteValue.set(sid(quote.enquiryId), quoted.get(`${quote._id}:${quote.currentVersion}`) || 0);
+  const quoteId = new Map<string, string>();
+  for (const quote of quotes) {
+    quoteValue.set(sid(quote.enquiryId), quoted.get(`${quote._id}:${quote.currentVersion}`) || 0);
+    quoteId.set(sid(quote.enquiryId), sid(quote._id));
+  }
   const typeName = new Map(types.map((type) => [sid(type._id), type.name]));
   const sourceName = new Map(sources.map((source) => [sid(source._id), source.name]));
   const ownerName = new Map(owners.map((owner) => [sid(owner._id), owner.name]));
@@ -592,6 +596,7 @@ export async function listPipeline() {
       nextActionAt: enquiry.nextActionAt ? new Date(enquiry.nextActionAt).toISOString() : null,
       stage: enquiry.stage as EnquiryStatus,
       priority: enquiry.priority || "normal",
+      quotationId: quoteId.get(sid(enquiry._id)) || "",
     };
   });
   return {

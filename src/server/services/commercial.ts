@@ -7,7 +7,9 @@ import {
   quotationEditMode,
   spaceReserved,
   transitionBooking,
+  transitionEnquiry,
   transitionQuote,
+  type EnquiryStatus,
   type QuoteStatus,
 } from "../../domain/states";
 import type { SessionUser } from "../auth";
@@ -41,6 +43,84 @@ function priced(input: QuoteInput, taxRate: number) {
     })),
     Math.round((input.headerDiscountShillings || 0) * 100),
   );
+}
+
+function versionLines(input: QuoteInput, totals: ReturnType<typeof priced>) {
+  return totals.lines.map((line, index) => ({
+    ...line,
+    serviceItemId: input.lines[index]?.serviceItemId || undefined,
+    unit: input.lines[index]?.unit || "item",
+    internalNote: input.lines[index]?.internalNote || "",
+  }));
+}
+
+function versionStory(input: QuoteInput) {
+  return {
+    inclusions: (input.inclusions || []).map((item) => item.trim()).filter(Boolean),
+    arrangements: input.arrangements || "",
+    clientRequirements: input.clientRequirements || "",
+  };
+}
+
+async function rememberEnquiryFacts(enquiryId: unknown, input: QuoteInput) {
+  if (!enquiryId) return;
+  const enquiry = await Enquiry.findById(enquiryId);
+  if (!enquiry) return;
+  if (input.eventDate) enquiry.preferredDate = combineNairobi(input.eventDate, "12:00");
+  if (input.startTime) enquiry.startTime = input.startTime;
+  if (input.endTime) enquiry.endTime = input.endTime;
+  if (input.guestCount) enquiry.estimatedGuests = input.guestCount;
+  await enquiry.save();
+}
+
+function lineFingerprint(lines: Array<{ description?: string; quantity?: number; unitPriceCents?: number; discountCents?: number }> | undefined) {
+  return (lines || []).map((line) => `${line.description}|${line.quantity}|${line.unitPriceCents}|${line.discountCents}`).join(";");
+}
+
+async function auditPricingEdits(
+  actorId: string,
+  quotationId: string,
+  previousLines: Array<{ description?: string; quantity?: number; unitPriceCents?: number; discountCents?: number }> | undefined,
+  previousDiscount: number,
+  totals: ReturnType<typeof priced>,
+  reason: string,
+) {
+  if (lineFingerprint(previousLines) !== lineFingerprint(totals.lines)) {
+    await recordAudit({
+      actorId,
+      action: "quotation.lines",
+      entityType: "quotation",
+      entityId: quotationId,
+      previousValue: { lines: previousLines },
+      newValue: { lines: totals.lines },
+      reason,
+    });
+  }
+  if ((previousDiscount || 0) !== totals.discountCents) {
+    await recordAudit({
+      actorId,
+      action: "quotation.discount",
+      entityType: "quotation",
+      entityId: quotationId,
+      previousValue: { discountCents: previousDiscount || 0 },
+      newValue: { discountCents: totals.discountCents },
+      reason,
+    });
+  }
+  const lowered = totals.lines.some((line, index) => {
+    const previous = previousLines?.[index];
+    return Boolean(previous && line.unitPriceCents < (previous.unitPriceCents || 0));
+  });
+  if (lowered) {
+    await recordAudit({
+      actorId,
+      action: "quotation.override",
+      entityType: "quotation",
+      entityId: quotationId,
+      newValue: { versionTotalCents: totals.totalCents },
+      reason,
+    });
+  }
 }
 
 async function conflictingBookings(spaceIds: string[], start: Date, end: Date, excludeId?: string, session?: ClientSession | null) {
@@ -96,10 +176,7 @@ export async function createQuotation(actor: SessionUser, input: QuoteInput) {
   await QuotationVersion.create({
     quotationId: quote._id,
     version: 1,
-    lines: totals.lines.map((line, index) => ({
-      ...line,
-      serviceItemId: input.lines[index].serviceItemId || undefined,
-    })),
+    lines: versionLines(input, totals),
     subtotalCents: totals.subtotalCents,
     taxCents: totals.taxCents,
     discountCents: totals.discountCents,
@@ -107,6 +184,7 @@ export async function createQuotation(actor: SessionUser, input: QuoteInput) {
     totalCents: totals.totalCents,
     status: "draft",
     createdBy: actor.id,
+    ...versionStory(input),
   });
   await recordAudit({
     actorId: actor.id,
@@ -122,6 +200,7 @@ export async function createQuotation(actor: SessionUser, input: QuoteInput) {
     kind: "created",
     summary: `${reference} V1 drafted at the current catalogue prices.`,
   });
+  await rememberEnquiryFacts(enquiry._id, input);
   await Enquiry.updateOne({ _id: enquiry._id }, { lastActivityAt: new Date() });
   return sid(quote._id);
 }
@@ -135,17 +214,17 @@ export async function reviseQuotation(actor: SessionUser, quotationId: string, i
   const current = await QuotationVersion.findOne({ quotationId: quote._id, version: quote.currentVersion });
   if (!current) throw new AppError("Quotation version is missing.");
   if (quotationEditMode(quote.status as QuoteStatus) === "update_draft") {
-    const previous = { totalCents: current.totalCents, lines: current.lines };
-    current.lines = totals.lines.map((line, index) => ({
-      ...line,
-      serviceItemId: input.lines[index].serviceItemId || undefined,
-    }));
+    const previousLines = JSON.parse(JSON.stringify(current.lines || [])) as Array<{ description?: string; quantity?: number; unitPriceCents?: number; discountCents?: number }>;
+    const previousDiscount = current.discountCents || 0;
+    const previous = { totalCents: current.totalCents, lines: previousLines };
+    current.lines = versionLines(input, totals);
     current.subtotalCents = totals.subtotalCents;
     current.taxCents = totals.taxCents;
     current.discountCents = totals.discountCents;
     current.headerDiscountCents = totals.headerDiscountCents;
     current.totalCents = totals.totalCents;
     current.reason = reason;
+    Object.assign(current, versionStory(input));
     await current.save();
     quote.notes = input.notes || quote.notes;
     quote.terms = input.terms || quote.terms;
@@ -161,16 +240,15 @@ export async function reviseQuotation(actor: SessionUser, quotationId: string, i
       newValue: { version: current.version, totalCents: totals.totalCents },
       reason,
     });
+    await auditPricingEdits(actor.id, sid(quote._id), previousLines, previousDiscount, totals, reason);
+    await rememberEnquiryFacts(quote.enquiryId, input);
     return sid(quote._id);
   }
   const version = quote.currentVersion + 1;
   await QuotationVersion.create({
     quotationId: quote._id,
     version,
-    lines: totals.lines.map((line, index) => ({
-      ...line,
-      serviceItemId: input.lines[index].serviceItemId || undefined,
-    })),
+    lines: versionLines(input, totals),
     subtotalCents: totals.subtotalCents,
     taxCents: totals.taxCents,
     discountCents: totals.discountCents,
@@ -179,6 +257,7 @@ export async function reviseQuotation(actor: SessionUser, quotationId: string, i
     status: "draft",
     reason,
     createdBy: actor.id,
+    ...versionStory(input),
   });
   const previousStatus = quote.status;
   quote.currentVersion = version;
@@ -204,6 +283,8 @@ export async function reviseQuotation(actor: SessionUser, quotationId: string, i
     kind: "system",
     summary: `${quote.reference} V${version} opened. Earlier versions stay on the record.`,
   });
+  await auditPricingEdits(actor.id, sid(quote._id), current.lines, current.discountCents || 0, totals, reason);
+  await rememberEnquiryFacts(quote.enquiryId, input);
   return sid(quote._id);
 }
 
@@ -258,6 +339,21 @@ export async function setQuotationStatus(actor: SessionUser, id: string, status:
       }
     }
     quote.validUntil = new Date(Date.now() + commercial.quotationValidityDays * 24 * 60 * 60 * 1000);
+    const { ProposalTerm } = await import("../models");
+    const configuredTerms = await ProposalTerm.find({ active: true }).sort({ order: 1, title: 1 }).lean();
+    version.termsSnapshot = configuredTerms.length
+      ? configuredTerms.map((term) => ({ title: term.title, content: term.content }))
+      : [{ title: "Terms", content: quote.terms || commercial.defaultTerms }];
+    version.termsVersion = configuredTerms.reduce((max, term) => Math.max(max, term.version || 1), 1);
+    version.depositCents = requiredDeposit(version.totalCents || 0, commercial.deposit);
+    version.sentAt = new Date();
+    version.sentBy = actor.id;
+    version.validUntil = quote.validUntil;
+    const { ProposalLink } = await import("../models");
+    await ProposalLink.updateMany(
+      { quotationId: quote._id, version: { $ne: version.version }, revokedAt: null },
+      { revokedAt: new Date() },
+    );
     const previousVersions = await QuotationVersion.find({
       quotationId: quote._id,
       version: { $ne: version.version },
@@ -272,6 +368,15 @@ export async function setQuotationStatus(actor: SessionUser, id: string, status:
   quote.status = status;
   quote.lastActivityAt = new Date();
   version.status = status;
+  if (status === "viewed") {
+    if (!version.viewedAt) version.viewedAt = new Date();
+    version.lastViewedAt = new Date();
+  }
+  if (status === "accepted" && !version.acceptedAt) version.acceptedAt = new Date();
+  if (status === "declined") {
+    version.declinedAt = new Date();
+    if (reason) version.declineReason = reason;
+  }
   await quote.save();
   await version.save();
   await recordAudit({
@@ -283,31 +388,49 @@ export async function setQuotationStatus(actor: SessionUser, id: string, status:
     newValue: { status, version: version.version, totalCents: version.totalCents },
     reason: reason || "",
   });
+  if (status === "sent" || status === "viewed" || status === "accepted" || status === "declined" || status === "expired") {
+    await recordAudit({
+      actorId: actor.id,
+      action: `proposal.${status}`,
+      entityType: "quotation",
+      entityId: id,
+      newValue: { version: version.version, totalCents: version.totalCents, status },
+      reason: reason || "",
+    });
+  }
   await recordActivity({
     entityType: "quotation",
     entityId: id,
     actorId: actor.id,
     kind: "stage",
-    summary: `${quote.reference} V${version.version} is ${status}.`,
+    summary: status === "viewed" && reason ? reason : `${quote.reference} V${version.version} is ${status}.`,
   });
   if (quote.enquiryId) await Enquiry.updateOne({ _id: quote.enquiryId }, { lastActivityAt: new Date() });
   if (status === "sent") await onQuoteSent(quote, actor.id);
   if (status === "accepted" && quote.enquiryId) {
     const enquiry = await Enquiry.findById(quote.enquiryId);
-    if (enquiry && !["confirmed", "lost", "cancelled"].includes(enquiry.stage)) {
-      const previousStage = enquiry.stage;
-      enquiry.stage = "negotiation";
-      enquiry.lastActivityAt = new Date();
-      await enquiry.save();
-      await recordAudit({
-        actorId: actor.id,
-        action: "enquiry.stage",
-        entityType: "enquiry",
-        entityId: sid(enquiry._id),
-        previousValue: { stage: previousStage },
-        newValue: { stage: "negotiation" },
-        reason: "Quotation accepted",
+    if (enquiry && !["confirmed", "lost", "cancelled", "deposit_pending"].includes(enquiry.stage)) {
+      const previousStage = enquiry.stage as EnquiryStatus;
+      const move = transitionEnquiry(previousStage, "deposit_pending", {
+        hasLostReason: Boolean(enquiry.lostReasonId),
+        hasConfirmedBooking: false,
       });
+      if (move.ok) {
+        enquiry.stage = "deposit_pending";
+        enquiry.lastActivityAt = new Date();
+        await enquiry.save();
+        await recordAudit({
+          actorId: actor.id,
+          action: "enquiry.stage",
+          entityType: "enquiry",
+          entityId: sid(enquiry._id),
+          previousValue: { stage: previousStage },
+          newValue: { stage: "deposit_pending" },
+          reason: "Quotation accepted",
+        });
+        const { onDepositPending } = await import("../automation");
+        await onDepositPending(enquiry, actor.id);
+      }
     }
   }
 }

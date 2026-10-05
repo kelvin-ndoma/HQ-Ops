@@ -81,6 +81,7 @@ const ServiceItemSchema = new Schema(
     unitPriceCents: { type: Number, required: true },
     unit: { type: String, default: "item" },
     taxRate: { type: Number, default: 0 },
+    taxBehavior: { type: String, default: "default" },
     active: { type: Boolean, default: true },
   },
   { timestamps: true },
@@ -169,6 +170,8 @@ const lineSchema = new Schema(
     netCents: Number,
     taxCents: Number,
     totalCents: Number,
+    unit: { type: String, default: "item" },
+    internalNote: { type: String, default: "" },
   },
   { _id: false },
 );
@@ -207,10 +210,48 @@ const QuotationVersionSchema = new Schema(
     status: { type: String, required: true },
     reason: { type: String, default: "" },
     createdBy: { type: Schema.Types.ObjectId, ref: "User" },
+    inclusions: { type: [String], default: [] },
+    arrangements: { type: String, default: "" },
+    clientRequirements: { type: String, default: "" },
+    termsSnapshot: { type: [{ title: String, content: String, _id: false }], default: [] },
+    termsVersion: { type: Number, default: 0 },
+    depositCents: { type: Number, default: 0 },
+    sentAt: Date,
+    sentBy: { type: Schema.Types.ObjectId, ref: "User" },
+    validUntil: Date,
+    viewedAt: Date,
+    lastViewedAt: Date,
+    acceptedAt: Date,
+    acceptedByName: { type: String, default: "" },
+    declinedAt: Date,
+    declineReason: { type: String, default: "" },
   },
   { timestamps: true },
 );
 QuotationVersionSchema.index({ quotationId: 1, version: 1 }, { unique: true });
+
+const ProposalTermSchema = new Schema(
+  {
+    title: { type: String, required: true, trim: true },
+    content: { type: String, required: true },
+    order: { type: Number, default: 0 },
+    active: { type: Boolean, default: true, index: true },
+    version: { type: Number, default: 1 },
+  },
+  { timestamps: true },
+);
+
+const ProposalLinkSchema = new Schema(
+  {
+    quotationId: { type: Schema.Types.ObjectId, ref: "Quotation", required: true, index: true },
+    version: { type: Number, required: true },
+    tokenHash: { type: String, required: true, unique: true },
+    expiresAt: Date,
+    revokedAt: { type: Date, default: null },
+    createdBy: { type: Schema.Types.ObjectId, ref: "User" },
+  },
+  { timestamps: true },
+);
 
 const BookingSchema = new Schema(
   {
@@ -574,6 +615,8 @@ export const EnquiryLink = register("EnquiryLink", EnquiryLinkSchema);
 export const SiteVisit = register("SiteVisit", SiteVisitSchema);
 export const Quotation = register("Quotation", QuotationSchema);
 export const QuotationVersion = register("QuotationVersion", QuotationVersionSchema);
+export const ProposalTerm = register("ProposalTerm", ProposalTermSchema);
+export const ProposalLink = register("ProposalLink", ProposalLinkSchema);
 export const Booking = register("Booking", BookingSchema);
 export const EventRecord = register("Event", EventSchema);
 export const Task = register("Task", TaskSchema);

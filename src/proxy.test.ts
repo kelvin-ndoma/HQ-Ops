@@ -14,6 +14,18 @@ describe("public enquiry route", () => {
     expect(response.headers.get("location")).toBeNull();
   });
 
+  it("serves a client proposal without a session", async () => {
+    const response = await proxy(new NextRequest("http://localhost/proposal/example-token-value"));
+    expect(response.headers.get("location")).toBeNull();
+    expect(response.status).toBe(200);
+  });
+
+  it("keeps the internal quotation workspace behind sign-in", async () => {
+    const response = await proxy(new NextRequest("http://localhost/quotations"));
+    expect(response.status).toBeGreaterThanOrEqual(300);
+    expect(response.headers.get("location")).toContain("/login");
+  });
+
   it("keeps the internal enquiry list behind sign-in", async () => {
     const response = await proxy(new NextRequest("http://localhost/enquiries"));
     expect(response.status).toBeGreaterThanOrEqual(300);

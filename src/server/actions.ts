@@ -17,9 +17,13 @@ import {
   paymentSchema,
   procurementSchema,
   procurementTransitionSchema,
+  proposalAcceptSchema,
+  proposalDeclineSchema,
+  proposalTermSchema,
   quoteReviseSchema,
   quoteSchema,
   quoteStatusSchema,
+  sendProposalSchema,
   reservationSchema,
   stageSchema,
   stockMoveSchema,
@@ -177,6 +181,56 @@ export async function quoteStatusAction(input: unknown) {
     await setQuotationStatus(user, parsed.id, parsed.status as QuoteStatus, parsed.reason || undefined);
     revalidatePath(`/quotations/${parsed.id}`);
     revalidatePath("/");
+    return done();
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function sendProposalAction(input: unknown) {
+  const user = await requireUser();
+  try {
+    requirePermission(user, "quotes.send");
+    const parsed = sendProposalSchema.parse(input);
+    const { sendProposal } = await import("./services/proposal");
+    const result = await sendProposal(user, parsed.id, parsed.message);
+    revalidatePath(`/quotations/${parsed.id}`);
+    return done(result);
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function acceptProposalAction(input: unknown) {
+  try {
+    const parsed = proposalAcceptSchema.parse(input);
+    const { acceptProposal } = await import("./services/proposal");
+    await acceptProposal(parsed.token, parsed.name);
+    return done();
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function declineProposalAction(input: unknown) {
+  try {
+    const parsed = proposalDeclineSchema.parse(input);
+    const { declineProposal } = await import("./services/proposal");
+    await declineProposal(parsed.token, parsed.reason || undefined);
+    return done();
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function saveProposalTermAction(input: unknown) {
+  const user = await requireUser();
+  try {
+    requirePermission(user, "settings.commercial");
+    const parsed = proposalTermSchema.parse(input);
+    const { saveProposalTerm } = await import("./services/proposal");
+    await saveProposalTerm(user, parsed);
+    revalidatePath("/settings");
     return done();
   } catch (error) {
     return fail(error);
@@ -625,7 +679,7 @@ export async function saveAssignmentAction(defaultOwnerId: string) {
   }
 }
 
-export async function saveCatalogAction(kind: "event-type" | "source" | "lost-reason" | "inventory-category" | "vendor-category" | "payment-method" | "space" | "service", input: { id?: string; name: string; description?: string; active?: boolean; capacity?: number; unitPriceShillings?: number; unit?: string }) {
+export async function saveCatalogAction(kind: "event-type" | "source" | "lost-reason" | "inventory-category" | "vendor-category" | "payment-method" | "space" | "service", input: { id?: string; name: string; description?: string; active?: boolean; capacity?: number; unitPriceShillings?: number; unit?: string; category?: string; taxBehavior?: string }) {
   const user = await requireUser();
   try {
     const operational = new Set(["event-type", "inventory-category", "vendor-category", "space"]);
@@ -652,6 +706,10 @@ export async function saveCatalogAction(kind: "event-type" | "source" | "lost-re
         if (!item) return { ok: false, error: "Service not found." };
         const previous = { unitPriceCents: item.unitPriceCents, name: item.name };
         item.name = input.name;
+        if (input.description !== undefined) item.description = input.description;
+        if (input.category) item.category = input.category;
+        if (input.unit) item.unit = input.unit;
+        if (input.taxBehavior === "exempt" || input.taxBehavior === "default") item.taxBehavior = input.taxBehavior;
         if (input.unitPriceShillings != null) item.unitPriceCents = Math.round(input.unitPriceShillings * 100);
         if (input.active !== undefined) item.active = input.active;
         await item.save();
@@ -663,7 +721,9 @@ export async function saveCatalogAction(kind: "event-type" | "source" | "lost-re
           code: input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40) + "-" + Date.now().toString(36),
           unitPriceCents: Math.round((input.unitPriceShillings || 0) * 100),
           unit: input.unit || "item",
+          category: input.category || "Other",
           description: input.description || "",
+          taxBehavior: input.taxBehavior === "exempt" ? "exempt" : "default",
         });
       }
     } else {

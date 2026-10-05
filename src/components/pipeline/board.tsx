@@ -1,7 +1,6 @@
 "use client";
 
 import { DndContext, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
-import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { formatKsh } from "@/domain/money";
@@ -24,6 +23,15 @@ export type PipelineCard = {
   nextActionAt: string | null;
   stage: EnquiryStatus;
   priority: string;
+  quotationId: string;
+};
+
+export type PipelineAccess = {
+  move: boolean;
+  visit: boolean;
+  quoteRead: boolean;
+  quoteWrite: boolean;
+  task: boolean;
 };
 
 type FollowUp = { label: string; tone: "overdue" | "today" | "missing" | "plain" };
@@ -37,14 +45,10 @@ function shortDate(value: string | null) {
   return new Intl.DateTimeFormat("en-KE", { timeZone: "Africa/Nairobi", day: "numeric", month: "short" }).format(new Date(value));
 }
 
-function compactKsh(cents: number) {
-  const shillings = cents / 100;
-  if (shillings >= 1_000_000) {
-    const millions = shillings / 1_000_000;
-    const digits = millions >= 10 ? 0 : 1;
-    return `KSh ${millions.toFixed(digits).replace(/\.0$/, "")}M`;
-  }
-  return formatKsh(cents);
+function monthLabel(value: string) {
+  const [year, month] = value.split("-");
+  if (!year || !month) return value;
+  return new Intl.DateTimeFormat("en-KE", { month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(Date.UTC(Number(year), Number(month) - 1, 1)));
 }
 
 function followUp(card: PipelineCard, today: string): FollowUp {
@@ -53,65 +57,166 @@ function followUp(card: PipelineCard, today: string): FollowUp {
   const due = nairobiDay(new Date(card.nextActionAt));
   if (due < today) return { label: "Follow-up overdue", tone: "overdue" };
   if (due === today) return { label: "Follow up today", tone: "today" };
-  return { label: `${card.nextAction || "Follow up"} · ${shortDate(card.nextActionAt)}`, tone: "plain" };
+  return { label: card.nextAction || `Follow up ${shortDate(card.nextActionAt)}`, tone: "plain" };
 }
 
-function CardBody({ card, stages, onMove, drag }: { card: PipelineCard; stages: EnquiryStatus[]; onMove: (id: string, stage: EnquiryStatus) => void; drag?: React.HTMLAttributes<HTMLButtonElement> }) {
-  const today = nairobiDay(new Date());
-  const follow = followUp(card, today);
-  const important = card.priority === "high" || card.priority === "urgent";
-  const accent = follow.tone === "overdue" ? "border-l-2 border-l-destructive" : important ? "border-l-2 border-l-primary" : "";
-  return (
-    <article className={`border border-border bg-card px-3 py-2.5 text-sm ${accent}`}>
-      <div className="flex items-start justify-between gap-2">
-        <a href={`/enquiries/${card.id}`} className="font-medium leading-snug hover:underline" onPointerDown={(event) => event.stopPropagation()}>{card.title}</a>
-        {drag ? <button type="button" className="cursor-grab px-1 text-muted-foreground" aria-label={`Move ${card.title}`} {...drag}>Move</button> : null}
-      </div>
-      <p className="text-muted-foreground">{card.eventType}</p>
-      <p className="mt-2 text-[13px]">{shortDate(card.date)}{card.guests ? ` · ${card.guests} guests` : ""}</p>
-      <p className="mt-1 font-medium">{formatKsh(card.valueCents)}</p>
-      <p className="mt-2 text-xs text-muted-foreground">{card.owner || "No owner"}</p>
-      <p className={`text-xs ${follow.tone === "overdue" ? "text-destructive" : follow.tone === "today" ? "text-warning" : follow.tone === "missing" ? "text-warning" : "text-muted-foreground"}`}>{follow.label}</p>
-      {important ? <p className="mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">{card.priority === "urgent" ? "Urgent" : "High priority"}</p> : null}
-      <label className="mt-2 block text-[11px] text-muted-foreground">
-        Stage
-        <select
-          className="mt-1 h-8 w-full border border-border bg-background px-2 text-xs"
-          value={card.stage}
-          onPointerDown={(event) => event.stopPropagation()}
-          onChange={(event) => onMove(card.id, event.target.value as EnquiryStatus)}
-        >
-          {stages.map((stage) => <option key={stage} value={stage}>{ENQUIRY_STATUS_LABELS[stage]}</option>)}
-        </select>
-      </label>
-    </article>
-  );
+function plural(count: number, singular: string, pluralLabel: string) {
+  return `${count} ${count === 1 ? singular : pluralLabel}`;
 }
 
-function CardView({ card, stages, onMove }: { card: PipelineCard; stages: EnquiryStatus[]; onMove: (id: string, stage: EnquiryStatus) => void }) {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: card.id });
-  const style = transform ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` } : undefined;
+function CardMenu({
+  card,
+  access,
+  stages,
+  onMove,
+  onLost,
+}: {
+  card: PipelineCard;
+  access: PipelineAccess;
+  stages: EnquiryStatus[];
+  onMove: (id: string, stage: EnquiryStatus) => void;
+  onLost: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [moving, setMoving] = useState(false);
+  const [position, setPosition] = useState({ top: 0, left: 0 });
+  const root = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    const onScroll = () => setOpen(false);
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [open]);
+
+  const quoteHref = card.quotationId && access.quoteRead ? `/quotations/${card.quotationId}` : access.quoteWrite ? `/quotations/new?enquiry=${card.id}` : "";
+  const quoteLabel = card.quotationId ? "View quotation" : "Create quotation";
+
   return (
-    <div ref={setNodeRef} style={style} className={isDragging ? "opacity-70" : undefined}>
-      <CardBody card={card} stages={stages} onMove={onMove} drag={{ ...listeners, ...attributes }} />
+    <div className="absolute bottom-1.5 right-1.5" ref={root}>
+      <button
+        type="button"
+        className="flex h-7 w-7 items-center justify-center text-sm tracking-widest text-muted-foreground hover:bg-muted hover:text-foreground"
+        aria-label={`Actions for ${card.title}`}
+        aria-expanded={open}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const rect = event.currentTarget.getBoundingClientRect();
+          setPosition({ top: rect.bottom + 4, left: Math.max(8, rect.right - 196) });
+          setMoving(false);
+          setOpen((value) => !value);
+        }}
+      >
+        •••
+      </button>
+      {open ? (
+        <div className="fixed z-50 w-48 border border-border bg-card py-1 text-sm shadow-lg" style={{ top: position.top, left: position.left }} role="menu">
+          <a className="block px-3 py-1.5 hover:bg-muted" href={`/enquiries/${card.id}`} role="menuitem">Open opportunity</a>
+          {access.move ? (
+            <button type="button" className="block w-full px-3 py-1.5 text-left hover:bg-muted" role="menuitem" onClick={() => setMoving((value) => !value)}>Move stage</button>
+          ) : null}
+          {moving ? stages.filter((stage) => stage !== card.stage && stage !== "lost").map((stage) => (
+            <button key={stage} type="button" className="block w-full px-3 py-1.5 pl-5 text-left text-xs hover:bg-muted" onClick={() => { setOpen(false); onMove(card.id, stage); }}>{ENQUIRY_STATUS_LABELS[stage]}</button>
+          )) : null}
+          {access.visit ? <a className="block px-3 py-1.5 hover:bg-muted" href={`/site-visits/new?enquiry=${card.id}`} role="menuitem">Schedule site visit</a> : null}
+          {quoteHref ? <a className="block px-3 py-1.5 hover:bg-muted" href={quoteHref} role="menuitem">{quoteLabel}</a> : null}
+          {access.task ? <a className="block px-3 py-1.5 hover:bg-muted" href="/tasks/new" role="menuitem">Add task</a> : null}
+          {access.move ? <button type="button" className="block w-full px-3 py-1.5 text-left hover:bg-muted" role="menuitem" onClick={() => { setOpen(false); onLost(card.id); }}>Mark lost</button> : null}
+          {access.move && card.stage !== "postponed" ? <button type="button" className="block w-full px-3 py-1.5 text-left hover:bg-muted" role="menuitem" onClick={() => { setOpen(false); onMove(card.id, "postponed"); }}>Postpone</button> : null}
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function Column({ stage, cards, stages, onMove }: { stage: EnquiryStatus; cards: PipelineCard[]; stages: EnquiryStatus[]; onMove: (id: string, stage: EnquiryStatus) => void }) {
-  const { setNodeRef, isOver } = useDroppable({ id: stage });
-  const value = cards.reduce((sum, card) => sum + card.valueCents, 0);
+function CardFace({
+  card,
+  access,
+  stages,
+  onMove,
+  onLost,
+  drag,
+}: {
+  card: PipelineCard;
+  access: PipelineAccess;
+  stages: EnquiryStatus[];
+  onMove: (id: string, stage: EnquiryStatus) => void;
+  onLost: (id: string) => void;
+  drag?: Record<string, unknown>;
+}) {
+  const today = nairobiDay(new Date());
+  const follow = followUp(card, today);
+  const important = card.priority === "high" || card.priority === "urgent";
+  const meta = [card.eventType, shortDate(card.date), card.guests ? `${card.guests} guests` : ""].filter(Boolean).join(" · ");
+  const followClass = follow.tone === "overdue" ? "text-destructive" : follow.tone === "today" || follow.tone === "missing" ? "text-warning" : "text-muted-foreground";
+  const edge = follow.tone === "overdue" ? "border-l-2 border-l-destructive" : important ? "border-l-2 border-l-primary" : "";
   return (
-    <section className={`flex h-full w-[300px] shrink-0 flex-col ${isOver ? "bg-accent/40" : ""}`}>
-      <header className="sticky top-0 z-10 border-b border-border bg-background px-1 pb-2">
-        <p className="text-xs font-medium uppercase tracking-[0.14em]">{ENQUIRY_STATUS_LABELS[stage]} · {cards.length}</p>
-        <p className="text-sm text-muted-foreground">{compactKsh(value)}</p>
-      </header>
-      <div ref={setNodeRef} className="mt-2 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-        {cards.map((card) => <CardView key={card.id} card={card} stages={stages} onMove={onMove} />)}
-        {cards.length === 0 ? <p className="px-1 py-6 text-center text-xs text-muted-foreground">No opportunities here</p> : null}
-      </div>
-    </section>
+    <article className={`relative border border-border bg-card ${edge}`} {...drag}>
+      <a href={`/enquiries/${card.id}`} className="block px-3 py-2.5 pr-9">
+        <p className="truncate text-sm font-medium leading-5">
+          {important ? <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-primary align-middle" aria-label={card.priority === "urgent" ? "Urgent" : "High priority"} /> : null}
+          {card.title}
+        </p>
+        <p className="truncate text-xs leading-5 text-muted-foreground">{meta}</p>
+        <p className="mt-1 text-sm font-medium leading-5">{formatKsh(card.valueCents)}</p>
+        <p className="mt-1 truncate text-xs leading-5 text-muted-foreground">
+          {card.owner || "No owner"}
+          <span> · </span>
+          <span className={followClass}>{follow.label}</span>
+        </p>
+      </a>
+      <CardMenu card={card} access={access} stages={stages} onMove={onMove} onLost={onLost} />
+    </article>
+  );
+}
+
+function DraggableCard(props: Omit<Parameters<typeof CardFace>[0], "drag">) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: props.card.id });
+  const style = transform ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` } : undefined;
+  return (
+    <div ref={setNodeRef} style={style} className={isDragging ? "opacity-60" : undefined}>
+      <CardFace {...props} drag={{ ...listeners, ...attributes }} />
+    </div>
+  );
+}
+
+function StageTab({
+  stage,
+  count,
+  selected,
+  onSelect,
+}: {
+  stage: EnquiryStatus;
+  count: number;
+  selected: boolean;
+  onSelect: (stage: EnquiryStatus) => void;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: stage });
+  return (
+    <button
+      ref={setNodeRef}
+      type="button"
+      aria-pressed={selected}
+      onClick={() => onSelect(stage)}
+      className={`inline-flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded-md border px-2 text-xs font-medium transition-colors ${selected ? "border-primary bg-primary text-primary-foreground hover:bg-primary/90" : "border-border bg-card text-foreground hover:bg-muted"} ${isOver ? "ring-2 ring-primary" : ""}`}
+    >
+      <span className="truncate">{ENQUIRY_STATUS_LABELS[stage]}</span>
+      <span className={selected ? "text-primary-foreground/80" : "text-muted-foreground"}>{count}</span>
+    </button>
   );
 }
 
@@ -123,6 +228,7 @@ export function PipelineBoard({
   sources,
   visitsThisWeek,
   quotesWaiting,
+  access,
 }: {
   initial: PipelineCard[];
   lostReasons: { id: string; name: string }[];
@@ -131,11 +237,13 @@ export function PipelineBoard({
   sources: string[];
   visitsThisWeek: number;
   quotesWaiting: number;
+  access: PipelineAccess;
 }) {
   const [cards, setCards] = useState(initial);
   const [pendingLost, setPendingLost] = useState<string | null>(null);
   const [reason, setReason] = useState(lostReasons[0]?.id || "");
   const [showClosed, setShowClosed] = useState(false);
+  const [moreFilters, setMoreFilters] = useState(false);
   const [query, setQuery] = useState("");
   const [owner, setOwner] = useState("");
   const [eventType, setEventType] = useState("");
@@ -143,20 +251,14 @@ export function PipelineBoard({
   const [source, setSource] = useState("");
   const [priority, setPriority] = useState("");
   const [needsFollowUp, setNeedsFollowUp] = useState(false);
-  const [mobileStage, setMobileStage] = useState<EnquiryStatus>("new");
-  const [edges, setEdges] = useState({ left: false, right: false });
-  const scroller = useRef<HTMLDivElement>(null);
-  const dragScroll = useRef<{ x: number; left: number } | null>(null);
+  const [selected, setSelected] = useState<EnquiryStatus>("new");
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
   const stages: EnquiryStatus[] = showClosed ? [...ENQUIRY_STAGES, ...ENQUIRY_EXITS] : [...ENQUIRY_STAGES];
   const today = nairobiDay(new Date());
 
   const active = useMemo(() => cards.filter((card) => ENQUIRY_STAGES.includes(card.stage as (typeof ENQUIRY_STAGES)[number])), [cards]);
   const activeValue = active.reduce((sum, card) => sum + card.valueCents, 0);
-  const followUps = active.filter((card) => {
-    const tone = followUp(card, today).tone;
-    return tone === "overdue" || tone === "today" || tone === "missing";
-  }).length;
+  const followUps = active.filter((card) => ["overdue", "today", "missing"].includes(followUp(card, today).tone)).length;
   const deposits = active.filter((card) => card.stage === "deposit_pending").length;
   const months = [...new Set(cards.map((card) => card.month).filter(Boolean))].sort();
 
@@ -167,10 +269,7 @@ export function PipelineBoard({
     if (month && card.month !== month) return false;
     if (source && card.source !== source) return false;
     if (priority && card.priority !== priority) return false;
-    if (needsFollowUp) {
-      const tone = followUp(card, today).tone;
-      if (tone !== "overdue" && tone !== "today" && tone !== "missing") return false;
-    }
+    if (needsFollowUp && !["overdue", "today", "missing"].includes(followUp(card, today).tone)) return false;
     if (query.trim()) {
       const haystack = `${card.title} ${card.eventType} ${card.owner} ${card.reference}`.toLowerCase();
       if (!haystack.includes(query.trim().toLowerCase())) return false;
@@ -178,32 +277,13 @@ export function PipelineBoard({
     return true;
   });
 
-  useEffect(() => {
-    const el = scroller.current;
-    if (!el) return;
-    const sync = () => setEdges({
-      left: el.scrollLeft > 8,
-      right: el.scrollLeft + el.clientWidth < el.scrollWidth - 8,
-    });
-    const observer = new ResizeObserver(sync);
-    observer.observe(el);
-    el.addEventListener("scroll", sync, { passive: true });
-    const onWheel = (event: WheelEvent) => {
-      if (!event.shiftKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-      event.preventDefault();
-      el.scrollLeft += event.deltaY;
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => {
-      observer.disconnect();
-      el.removeEventListener("scroll", sync);
-      el.removeEventListener("wheel", onWheel);
-    };
-  }, [showClosed, visible.length]);
-
-  function scrollByColumn(direction: number) {
-    scroller.current?.scrollBy({ left: direction * 312, behavior: "smooth" });
-  }
+  const chips = [
+    eventType ? { id: "eventType", label: eventType, clear: () => setEventType("") } : null,
+    source ? { id: "source", label: source, clear: () => setSource("") } : null,
+    priority ? { id: "priority", label: priority, clear: () => setPriority("") } : null,
+    needsFollowUp ? { id: "follow", label: "Needs follow-up", clear: () => setNeedsFollowUp(false) } : null,
+    showClosed ? { id: "closed", label: "Lost, cancelled, postponed", clear: () => setShowClosed(false) } : null,
+  ].filter((chip): chip is { id: string; label: string; clear: () => void } => Boolean(chip));
 
   async function move(id: string, stage: EnquiryStatus, lostReasonId?: string) {
     const previous = cards;
@@ -216,6 +296,7 @@ export function PipelineBoard({
   }
 
   function requestMove(id: string, stage: EnquiryStatus) {
+    if (!access.move) return;
     if (stage === "lost") {
       setPendingLost(id);
       return;
@@ -224,89 +305,89 @@ export function PipelineBoard({
   }
 
   function onDragEnd(event: DragEndEvent) {
-    const stage = String(event.over?.id || "") as EnquiryStatus;
-    if (!stages.includes(stage)) return;
-    requestMove(String(event.active.id), stage);
+    const next = String(event.over?.id || "") as EnquiryStatus;
+    if (!stages.includes(next)) return;
+    const current = cards.find((card) => card.id === String(event.active.id));
+    if (!current || current.stage === next) return;
+    requestMove(current.id, next);
   }
 
-  const mobileCards = visible.filter((card) => card.stage === mobileStage);
-  const mobileValue = mobileCards.reduce((sum, card) => sum + card.valueCents, 0);
-  const mobileIndex = Math.max(0, stages.indexOf(mobileStage));
+  const field = "h-8 border border-border bg-card px-2 text-xs";
+  const stage = stages.includes(selected) ? selected : stages[0];
+  const stageCards = visible.filter((card) => card.stage === stage);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Sales</p>
-          <h1 className="font-display text-2xl leading-none">Active pipeline</h1>
-          <p className="mt-1 text-sm">{active.length} opportunities · {formatKsh(activeValue)} potential value</p>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Needs follow-up {followUps}
-          <span className="px-2">·</span>
-          Site visits this week {visitsThisWeek}
-          <span className="px-2">·</span>
-          Quotes awaiting response {quotesWaiting}
-          <span className="px-2">·</span>
-          Deposit pending {deposits}
+    <div>
+      <div className="mb-4 max-w-3xl">
+        <h1 className="font-display text-2xl leading-none">Pipeline</h1>
+        <p className="mt-2 text-sm">{formatKsh(activeValue)} active pipeline · {plural(active.length, "opportunity", "opportunities")}</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {plural(followUps, "needs follow-up", "need follow-up")}
+          <span> · </span>
+          {plural(visitsThisWeek, "site visit this week", "site visits this week")}
+          <span> · </span>
+          {plural(quotesWaiting, "quote awaiting response", "quotes awaiting response")}
+          <span> · </span>
+          {plural(deposits, "deposit pending", "deposits pending")}
         </p>
       </div>
-      <div className="mb-3 flex flex-wrap gap-2">
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search" className="h-8 w-36 border border-border bg-card px-2 text-xs" />
-        <select value={owner} onChange={(event) => setOwner(event.target.value)} className="h-8 border border-border bg-card px-2 text-xs"><option value="">All owners</option>{owners.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select>
-        <select value={eventType} onChange={(event) => setEventType(event.target.value)} className="h-8 border border-border bg-card px-2 text-xs"><option value="">All event types</option>{eventTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select>
-        <select value={month} onChange={(event) => setMonth(event.target.value)} className="h-8 border border-border bg-card px-2 text-xs"><option value="">Any month</option>{months.map((value) => <option key={value} value={value}>{value}</option>)}</select>
-        <select value={source} onChange={(event) => setSource(event.target.value)} className="h-8 border border-border bg-card px-2 text-xs"><option value="">All sources</option>{sources.map((value) => <option key={value} value={value}>{value}</option>)}</select>
-        <select value={priority} onChange={(event) => setPriority(event.target.value)} className="h-8 border border-border bg-card px-2 text-xs"><option value="">Any priority</option><option value="urgent">Urgent</option><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option></select>
-        <label className="flex h-8 items-center gap-2 px-1 text-xs"><input type="checkbox" checked={needsFollowUp} onChange={(event) => setNeedsFollowUp(event.target.checked)} /> Needs follow-up</label>
-        <label className="flex h-8 items-center gap-2 px-1 text-xs"><input type="checkbox" checked={showClosed} onChange={(event) => setShowClosed(event.target.checked)} /> Lost, cancelled, postponed</label>
-      </div>
 
-      <div className="relative hidden min-h-0 flex-1 md:block">
-        {edges.left ? <div className="pointer-events-none absolute inset-y-0 left-0 z-20 w-8 bg-gradient-to-r from-background to-transparent" /> : null}
-        {edges.right ? <div className="pointer-events-none absolute inset-y-0 right-0 z-20 w-8 bg-gradient-to-l from-background to-transparent" /> : null}
-        <button type="button" className="absolute left-0 top-0 z-20 flex h-7 w-7 items-center justify-center border border-border bg-card" aria-label="Previous stages" onClick={() => scrollByColumn(-1)}><ChevronLeft className="h-4 w-4" /></button>
-        <button type="button" className="absolute right-0 top-0 z-20 flex h-7 w-7 items-center justify-center border border-border bg-card" aria-label="Next stages" onClick={() => scrollByColumn(1)}><ChevronRight className="h-4 w-4" /></button>
-        <DndContext sensors={sensors} onDragEnd={onDragEnd}>
-          <div
-            ref={scroller}
-            className="flex h-full gap-3 overflow-x-auto overflow-y-hidden px-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-            onPointerDown={(event) => {
-              if ((event.target as HTMLElement).closest("article, a, button, select, input, label")) return;
-              dragScroll.current = { x: event.clientX, left: scroller.current?.scrollLeft || 0 };
-              (event.currentTarget as HTMLDivElement).setPointerCapture(event.pointerId);
-            }}
-            onPointerMove={(event) => {
-              if (!dragScroll.current || !scroller.current) return;
-              scroller.current.scrollLeft = dragScroll.current.left - (event.clientX - dragScroll.current.x);
-            }}
-            onPointerUp={() => { dragScroll.current = null; }}
-          >
-            {stages.map((stage) => <Column key={stage} stage={stage} cards={visible.filter((card) => card.stage === stage)} stages={stages} onMove={requestMove} />)}
-          </div>
-        </DndContext>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search" className={`${field} w-40`} />
+        <select value={owner} onChange={(event) => setOwner(event.target.value)} className={field} aria-label="Owner">
+          <option value="">Owner</option>
+          {owners.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+        </select>
+        <select value={month} onChange={(event) => setMonth(event.target.value)} className={field} aria-label="Event month">
+          <option value="">Event month</option>
+          {months.map((value) => <option key={value} value={value}>{monthLabel(value)}</option>)}
+        </select>
+        <button type="button" className={field} aria-expanded={moreFilters} onClick={() => setMoreFilters((value) => !value)}>More filters</button>
       </div>
+      {moreFilters ? (
+        <div className="mb-3 flex flex-wrap gap-2">
+          <select value={eventType} onChange={(event) => setEventType(event.target.value)} className={field} aria-label="Event type">
+            <option value="">Event type</option>
+            {eventTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+          </select>
+          <select value={source} onChange={(event) => setSource(event.target.value)} className={field} aria-label="Source">
+            <option value="">Source</option>
+            {sources.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+          <select value={priority} onChange={(event) => setPriority(event.target.value)} className={field} aria-label="Priority">
+            <option value="">Priority</option>
+            <option value="urgent">Urgent</option>
+            <option value="high">High</option>
+            <option value="normal">Normal</option>
+            <option value="low">Low</option>
+          </select>
+          <label className="flex h-8 items-center gap-2 px-1 text-xs"><input type="checkbox" checked={needsFollowUp} onChange={(event) => setNeedsFollowUp(event.target.checked)} /> Needs follow-up</label>
+          <label className="flex h-8 items-center gap-2 px-1 text-xs"><input type="checkbox" checked={showClosed} onChange={(event) => setShowClosed(event.target.checked)} /> Include lost, cancelled, postponed</label>
+        </div>
+      ) : null}
+      {chips.length ? (
+        <div className="mb-3 flex flex-wrap gap-2">
+          {chips.map((chip) => (
+            <button key={chip.id} type="button" className="h-7 border border-border bg-card px-2 text-xs" onClick={chip.clear}>{chip.label} ×</button>
+          ))}
+        </div>
+      ) : null}
 
-      <div className="md:hidden">
-        <div className="mb-3 flex items-center justify-between gap-2">
-          <button type="button" className="flex h-9 w-9 items-center justify-center border border-border" aria-label="Previous stage" onClick={() => setMobileStage(stages[Math.max(0, mobileIndex - 1)])}><ChevronLeft className="h-4 w-4" /></button>
-          <label className="min-w-0 flex-1 text-center text-sm">
-            <span className="block text-xs uppercase tracking-[0.14em]">{ENQUIRY_STATUS_LABELS[mobileStage]} · {mobileCards.length}</span>
-            <span className="text-muted-foreground">{compactKsh(mobileValue)}</span>
-            <select className="mt-1 h-8 w-full border border-border bg-card px-2 text-xs" value={mobileStage} onChange={(event) => setMobileStage(event.target.value as EnquiryStatus)}>
-              {stages.map((stage) => <option key={stage} value={stage}>{ENQUIRY_STATUS_LABELS[stage]}</option>)}
-            </select>
-          </label>
-          <button type="button" className="flex h-9 w-9 items-center justify-center border border-border" aria-label="Next stage" onClick={() => setMobileStage(stages[Math.min(stages.length - 1, mobileIndex + 1)])}><ChevronRight className="h-4 w-4" /></button>
+      <DndContext id="pipeline-board" sensors={sensors} onDragEnd={onDragEnd}>
+        <div className="mb-3 flex gap-1.5">
+          {stages.map((item) => {
+            const count = visible.filter((card) => card.stage === item).length;
+            return <StageTab key={item} stage={item} count={count} selected={item === stage} onSelect={setSelected} />;
+          })}
         </div>
-        <div className="space-y-2">
-          {mobileCards.map((card) => <CardBody key={card.id} card={card} stages={stages} onMove={requestMove} />)}
-          {mobileCards.length === 0 ? <p className="py-8 text-center text-sm text-muted-foreground">No opportunities here</p> : null}
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          {stageCards.map((card) => <DraggableCard key={card.id} card={card} access={access} stages={stages} onMove={requestMove} onLost={setPendingLost} />)}
         </div>
-      </div>
+        {stageCards.length === 0 ? <p className="py-8 text-center text-sm text-muted-foreground">No opportunities in {ENQUIRY_STATUS_LABELS[stage]}</p> : null}
+      </DndContext>
 
       {pendingLost ? (
-        <form className="fixed inset-x-3 bottom-3 z-40 max-w-sm border border-border bg-card p-3 shadow-lg md:left-auto md:right-6" onSubmit={async (event) => {
+        <form className="fixed inset-x-3 bottom-3 z-50 max-w-sm border border-border bg-card p-3 shadow-lg md:left-auto md:right-6" onSubmit={async (event) => {
           event.preventDefault();
           await move(pendingLost, "lost", reason);
           setPendingLost(null);

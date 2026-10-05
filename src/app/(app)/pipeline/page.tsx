@@ -1,3 +1,4 @@
+import { can } from "@/domain/permissions";
 import { PipelineBoard } from "@/components/pipeline/board";
 import { requirePermission, requireUser } from "@/server/guard";
 import { LostReason } from "@/server/models";
@@ -11,16 +12,21 @@ export default async function PipelinePage() {
     LostReason.find({ active: true }).sort({ name: 1 }).lean(),
   ]);
   return (
-    <div className="flex h-[calc(100dvh-7rem)] min-h-[32rem] flex-col">
-      <PipelineBoard
-        initial={board.cards}
-        lostReasons={reasons.map((reason) => ({ id: String(reason._id), name: reason.name }))}
-        owners={board.owners}
-        eventTypes={board.eventTypes}
-        sources={board.sources}
-        visitsThisWeek={board.visitsThisWeek}
-        quotesWaiting={board.quotesWaiting}
-      />
-    </div>
+    <PipelineBoard
+      initial={board.cards}
+      lostReasons={reasons.map((reason) => ({ id: String(reason._id), name: reason.name }))}
+      owners={board.owners}
+      eventTypes={board.eventTypes}
+      sources={board.sources}
+      visitsThisWeek={board.visitsThisWeek}
+      quotesWaiting={board.quotesWaiting}
+      access={{
+        move: can(user.role, "enquiries.transition"),
+        visit: can(user.role, "visits.write"),
+        quoteRead: can(user.role, "quotes.read"),
+        quoteWrite: can(user.role, "quotes.write"),
+        task: can(user.role, "tasks.write"),
+      }}
+    />
   );
 }

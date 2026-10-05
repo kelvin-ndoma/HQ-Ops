@@ -80,6 +80,8 @@ export const quoteLineSchema = z.object({
   unitPriceShillings: z.number().nonnegative(),
   discountShillings: z.number().nonnegative().optional(),
   taxRate: z.number().nonnegative().optional(),
+  unit: z.string().trim().optional().or(z.literal("")),
+  internalNote: optionalText,
 });
 
 export const quoteSchema = z.object({
@@ -88,6 +90,13 @@ export const quoteSchema = z.object({
   notes: optionalText,
   terms: optionalText,
   headerDiscountShillings: z.number().nonnegative().optional(),
+  inclusions: z.array(z.string()).optional(),
+  arrangements: optionalText,
+  clientRequirements: optionalText,
+  eventDate: optionalText,
+  startTime: optionalText,
+  endTime: optionalText,
+  guestCount: z.number().int().positive().optional(),
   lines: z.array(quoteLineSchema).min(1),
 });
 
@@ -264,6 +273,30 @@ export const noteSchema = z.object({
   entityType: z.string().min(2),
   entityId: z.string().min(1),
   body: z.string().trim().min(2),
+});
+
+export const sendProposalSchema = z.object({
+  id: z.string().min(1),
+  message: optionalText,
+});
+
+export const proposalAcceptSchema = z.object({
+  token: z.string().trim().min(20),
+  name: z.string().trim().min(2, "Enter the name of the person accepting."),
+  acceptTerms: z.literal(true, { message: "Accept the proposal terms to continue." }),
+});
+
+export const proposalDeclineSchema = z.object({
+  token: z.string().trim().min(20),
+  reason: z.string().trim().max(80).optional().or(z.literal("")),
+});
+
+export const proposalTermSchema = z.object({
+  id: z.string().optional().or(z.literal("")),
+  title: z.string().trim().min(2),
+  content: z.string().trim().min(2),
+  order: z.number().int().nonnegative().optional(),
+  active: z.boolean().optional(),
 });
 
 export const quoteStatusSchema = z.object({
