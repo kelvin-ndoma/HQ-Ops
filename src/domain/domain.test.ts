@@ -17,7 +17,7 @@ describe("permissions", () => {
     expect(can("leadership", "users.manage")).toBe(false);
     expect(can("super_admin", "users.manage")).toBe(true);
     expect(can("super_admin", "payments.write")).toBe(true);
-    expect(can("super_admin", "settings.write")).toBe(true);
+    expect(can("super_admin", "settings.commercial")).toBe(true);
     expect(can("operations_lead", "inventory.override")).toBe(true);
     expect(can("sales_coordinator", "bookings.override_deposit")).toBe(false);
   });

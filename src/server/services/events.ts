@@ -6,7 +6,9 @@ import { recordActivity, recordAudit } from "../audit";
 import { connectDB } from "../db";
 import { AppError } from "../errors";
 import {
+  Booking,
   Client,
+  Enquiry,
   EventCost,
   EventRecord,
   EventVendor,
@@ -90,10 +92,16 @@ async function refreshPreparation(eventId: string) {
 export async function listEvents(actor: SessionUser) {
   await connectDB();
   const events = await EventRecord.find({ archivedAt: null }).sort({ startAt: 1 }).limit(200).lean();
-  if (can(actor.role, "events.write") || can(actor.role, "events.financials") || actor.role === "administrator") return events;
-  const taskIds = await Task.find({ ownerId: actor.id, relatedType: "event", archivedAt: null }).distinct("relatedId");
+  if (can(actor.role, "events.write") || can(actor.role, "events.financials") || actor.role === "administrator" || actor.role === "super_admin") return events;
+  const [taskIds, enquiries, bookings] = await Promise.all([
+    Task.find({ ownerId: actor.id, relatedType: "event", archivedAt: null }).distinct("relatedId"),
+    Enquiry.find({ ownerId: actor.id, archivedAt: null }).distinct("_id"),
+    Booking.find({ ownerId: actor.id, archivedAt: null }).distinct("_id"),
+  ]);
   const allowed = new Set(taskIds.map((id) => String(id)));
-  return events.filter((event) => sid(event.ownerId) === actor.id || (event.staffIds || []).some((id: unknown) => sid(id) === actor.id) || allowed.has(sid(event._id)));
+  const enquiryIds = new Set(enquiries.map((id) => String(id)));
+  const bookingIds = new Set(bookings.map((id) => String(id)));
+  return events.filter((event) => sid(event.ownerId) === actor.id || enquiryIds.has(sid(event.enquiryId)) || bookingIds.has(sid(event.bookingId)) || (event.staffIds || []).some((id: unknown) => sid(id) === actor.id) || allowed.has(sid(event._id)));
 }
 
 export async function getEventWorkspace(actor: SessionUser, id: string) {
@@ -115,11 +123,20 @@ export async function getEventWorkspace(actor: SessionUser, id: string) {
   const { Booking } = await import("../models");
   const booking = await Booking.findById(event.bookingId).lean();
   const contribution = eventContribution(booking?.agreedAmountCents || 0, direct);
-  const financials = can(actor.role, "events.financials") || can(actor.role, "costs.read") || can(actor.role, "payments.read");
-  return { event, client, tasks, vendors, vendorDocs, reservations, costs, owner, booking, contribution, financials };
+  const financials = can(actor.role, "events.financials") || can(actor.role, "costs.read");
+  const access = {
+    edit: can(actor.role, "events.write"),
+    closeout: can(actor.role, "events.closeout"),
+    inventory: can(actor.role, "inventory.move"),
+    vendors: can(actor.role, "vendors.write"),
+    costs: can(actor.role, "costs.write"),
+    tasks: can(actor.role, "tasks.write"),
+  };
+  return { event, client, tasks, vendors, vendorDocs, reservations, costs, owner, booking, contribution, financials, access };
 }
 
 export async function updateEvent(actor: SessionUser, id: string, patch: { notes?: string; requirements?: { label: string; value: string }[]; status?: EventStatus; staffIds?: string[] }) {
+  if (!can(actor.role, "events.write")) throw new AppError("You cannot change the event workspace.", "forbidden");
   await connectDB();
   const event = await EventRecord.findById(id);
   if (!event) throw new AppError("Event not found.", "not_found");
@@ -152,6 +169,7 @@ export async function updateEvent(actor: SessionUser, id: string, patch: { notes
 }
 
 export async function toggleCloseout(actor: SessionUser, eventId: string, key: string, done: boolean, notes?: string) {
+  if (!can(actor.role, "events.closeout")) throw new AppError("You cannot complete operational closeout.", "forbidden");
   await connectDB();
   const event = await EventRecord.findById(eventId);
   if (!event) throw new AppError("Event not found.", "not_found");
@@ -221,6 +239,7 @@ export async function assignVendor(actor: SessionUser, input: {
   agreedCostCents?: number;
   notes?: string;
 }) {
+  if (!can(actor.role, "vendors.write")) throw new AppError("You cannot change vendor agreements.", "forbidden");
   await connectDB();
   const row = await EventVendor.create({
     ...input,
@@ -239,6 +258,7 @@ export async function assignVendor(actor: SessionUser, input: {
 }
 
 export async function setVendorAssignment(actor: SessionUser, id: string, status: VendorAssignmentStatus, costs?: { quotedCostCents?: number; agreedCostCents?: number }) {
+  if (!can(actor.role, "vendors.write")) throw new AppError("You cannot change vendor agreements.", "forbidden");
   await connectDB();
   const row = await EventVendor.findById(id);
   if (!row) throw new AppError("Vendor assignment not found.", "not_found");
@@ -292,17 +312,51 @@ export async function createProcurement(actor: SessionUser, input: {
     entityId: sid(request._id),
     newValue: { reference, estimatedCostCents: request.estimatedCostCents },
   });
+  const { getCommercial } = await import("../settings");
+  const { aboveThreshold } = await import("../../domain/approvals");
+  const commercial = await getCommercial();
+  if (aboveThreshold(request.estimatedCostCents || 0, commercial.approvals.procurementCents)) {
+    const { submitApproval } = await import("./approvals");
+    await submitApproval(actor, {
+      entityType: "procurement",
+      entityId: sid(request._id),
+      actionType: "procurement_threshold",
+      reason: input.reason,
+      proposedValue: { estimatedCostCents: request.estimatedCostCents, item: request.item },
+    });
+  }
   return sid(request._id);
 }
 
-export async function setProcurementStatus(actor: SessionUser, id: string, status: ProcurementStatus, note?: string, finalCostCents?: number) {
+export async function setProcurementStatus(actor: SessionUser, id: string, status: ProcurementStatus, note?: string, finalCostCents?: number, fromApproval = false) {
   await connectDB();
   const request = await ProcurementRequest.findOne({ _id: id, archivedAt: null });
   if (!request) throw new AppError("Request not found.", "not_found");
   const result = transitionProcurement(request.status, status);
   if (!result.ok) throw new AppError(result.error);
-  if ((status === "approved" || status === "rejected") && !can(actor.role, "procurement.approve")) {
+  if ((status === "approved" || status === "rejected") && !fromApproval && !can(actor.role, "procurement.approve") && !can(actor.role, "approvals.review_operations") && !can(actor.role, "approvals.review")) {
     throw new AppError("You cannot approve procurement requests.", "forbidden");
+  }
+  if (status === "approved" && !fromApproval) {
+    const { getCommercial } = await import("../settings");
+    const { aboveThreshold } = await import("../../domain/approvals");
+    const commercial = await getCommercial();
+    if (aboveThreshold(request.estimatedCostCents || 0, commercial.approvals.procurementCents)) {
+      const { ApprovalRequest } = await import("../models");
+      const approved = await ApprovalRequest.findOne({ entityType: "procurement", entityId: id, actionType: "procurement_threshold", status: "approved" });
+      if (!approved) {
+        const { submitApproval } = await import("./approvals");
+        await submitApproval(actor, {
+          entityType: "procurement",
+          entityId: id,
+          actionType: "procurement_threshold",
+          reason: note || request.reason,
+          originalValue: { status: request.status, estimatedCostCents: request.estimatedCostCents },
+          proposedValue: { status: "approved" },
+        });
+        throw new AppError("This request is above the configured threshold. It stays requested until the approval is granted.");
+      }
+    }
   }
   const previous = request.status;
   request.status = status;
@@ -327,6 +381,7 @@ export async function listProcurement() {
 }
 
 export async function addEventCost(actor: SessionUser, input: { eventId: string; category: string; description: string; amountCents: number; vendorId?: string }) {
+  if (!can(actor.role, "costs.write")) throw new AppError("You cannot record event costs.", "forbidden");
   await connectDB();
   const cost = await EventCost.create({
     ...input,

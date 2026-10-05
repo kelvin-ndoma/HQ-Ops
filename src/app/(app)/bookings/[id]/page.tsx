@@ -5,6 +5,7 @@ import { BookingDecisions } from "@/components/forms/booking-form";
 import { PageHeader } from "@/components/page";
 import { StatusPill } from "@/components/status-pill";
 import { Button } from "@/components/ui/button";
+import { can } from "@/domain/permissions";
 import { requirePermission, requireUser } from "@/server/guard";
 import { getBooking } from "@/server/services/commercial";
 
@@ -18,7 +19,12 @@ export default async function BookingPage({ params }: { params: Promise<{ id: st
     <div className="grid gap-6 lg:grid-cols-[1.4fr_0.7fr]">
       <div>
         <PageHeader eyebrow={booking.reference} title={data.client?.name || "Booking"} description={formatWhen(booking.startAt, "Africa/Nairobi", true)} actions={data.event ? <Button asChild><Link href={`/events/${data.event._id}`}>Open event</Link></Button> : null} />
-        <div className="mb-4 flex gap-2"><StatusPill value={booking.status} /><StatusPill value={booking.financialStatus} /></div>
+        <div className="mb-4 flex flex-wrap gap-2">
+          <StatusPill value={booking.status} />
+          <StatusPill value={booking.financialStatus} />
+          <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] uppercase tracking-wide">{data.spaceReserved ? "Venue reserved" : "Venue not reserved"}</span>
+        </div>
+        {!data.spaceReserved && (booking.status === "awaiting_deposit" || booking.status === "tentative") ? <p className="mb-4 text-sm text-warning">The hold has expired. This record is still {booking.status.replaceAll("_", " ")}, and the space can be booked by someone else until the hold is reinstated.</p> : null}
         <dl className="grid gap-3 text-sm sm:grid-cols-2">
           <div><dt className="text-muted-foreground">Spaces</dt><dd>{data.spaces.map((space) => space.name).join(", ")}</dd></div>
           <div><dt className="text-muted-foreground">Guests</dt><dd>{booking.guestCount}</dd></div>
@@ -37,7 +43,7 @@ export default async function BookingPage({ params }: { params: Promise<{ id: st
       </div>
       <aside className="rounded-md border border-border bg-card p-4">
         <h2 className="mb-3 font-medium">Decision</h2>
-        <BookingDecisions id={id} status={booking.status} />
+        <BookingDecisions id={id} status={booking.status} reserved={data.spaceReserved} canExtend={can(user.role, "bookings.extend_hold")} canRequest={can(user.role, "bookings.request_hold")} />
       </aside>
     </div>
   );

@@ -144,8 +144,28 @@ export async function moveStock(actor: SessionUser, input: {
   reason: string;
   eventId?: string;
   override?: boolean;
+  approved?: boolean;
 }) {
   await connectDB();
+  if ((input.type === "damage" || input.type === "loss") && !input.approved) {
+    const item = await InventoryItem.findById(input.itemId);
+    const { getCommercial } = await import("../settings");
+    const { aboveThreshold } = await import("../../domain/approvals");
+    const commercial = await getCommercial();
+    const value = input.quantity * (item?.unitCostCents || 0);
+    if (aboveThreshold(value, commercial.approvals.inventoryWriteOffCents)) {
+      const { submitApproval } = await import("./approvals");
+      await submitApproval(actor, {
+        entityType: "inventory_item",
+        entityId: input.itemId,
+        actionType: "inventory_writeoff",
+        reason: input.reason,
+        originalValue: { quantityOnHand: item?.quantityOnHand, unitCostCents: item?.unitCostCents },
+        proposedValue: { itemId: input.itemId, type: input.type, quantity: input.quantity, reason: input.reason, eventId: input.eventId, valueCents: value },
+      });
+      throw new AppError("This write-off is above the configured threshold. Stock was not changed. An approval request is waiting.");
+    }
+  }
   if (input.type === "adjustment") {
     return apply(actor, input.itemId, { type: "adjustment", delta: input.quantity }, input.reason, input.eventId, input.override);
   }
@@ -164,6 +184,9 @@ function reservationStatus(row: { quantityReserved: number; quantityIssued: numb
 }
 
 export async function reserveForEvent(actor: SessionUser, input: { eventId: string; itemId: string; quantity: number; override?: boolean; reason?: string }) {
+  if (!can(actor.role, "inventory.move") && !can(actor.role, "inventory.write")) {
+    throw new AppError("You cannot change inventory allocations.", "forbidden");
+  }
   await connectDB();
   const event = await EventRecord.findById(input.eventId);
   if (!event) throw new AppError("Event not found.", "not_found");
@@ -177,6 +200,15 @@ export async function reserveForEvent(actor: SessionUser, input: { eventId: stri
   if (input.override) {
     reservation.overrideBy = actor.id;
     reservation.overrideReason = input.reason || "";
+    const { recordOverride } = await import("../overrides");
+    await recordOverride({
+      actorId: actor.id,
+      entityType: "inventory_item",
+      entityId: input.itemId,
+      action: "inventory_over_allocation",
+      reason: input.reason || "",
+      permission: "inventory.override",
+    });
   }
   reservation.status = reservationStatus(reservation);
   await reservation.save();
@@ -189,6 +221,9 @@ export async function reserveForEvent(actor: SessionUser, input: { eventId: stri
 }
 
 export async function issueReserved(actor: SessionUser, reservationId: string, quantity: number) {
+  if (!can(actor.role, "inventory.move") && !can(actor.role, "inventory.write")) {
+    throw new AppError("You cannot change inventory allocations.", "forbidden");
+  }
   await connectDB();
   const reservation = await InventoryReservation.findById(reservationId);
   if (!reservation) throw new AppError("Reservation not found.", "not_found");
@@ -201,6 +236,9 @@ export async function issueReserved(actor: SessionUser, reservationId: string, q
 }
 
 export async function returnIssued(actor: SessionUser, reservationId: string, quantity: number, damaged = 0, lost = 0) {
+  if (!can(actor.role, "inventory.move") && !can(actor.role, "inventory.write")) {
+    throw new AppError("You cannot change inventory allocations.", "forbidden");
+  }
   await connectDB();
   const reservation = await InventoryReservation.findById(reservationId);
   if (!reservation) throw new AppError("Reservation not found.", "not_found");
@@ -229,6 +267,9 @@ export async function returnIssued(actor: SessionUser, reservationId: string, qu
 }
 
 export async function releaseReservation(actor: SessionUser, reservationId: string) {
+  if (!can(actor.role, "inventory.move") && !can(actor.role, "inventory.write")) {
+    throw new AppError("You cannot change inventory allocations.", "forbidden");
+  }
   await connectDB();
   const reservation = await InventoryReservation.findById(reservationId);
   if (!reservation || reservation.quantityReserved <= 0) return;

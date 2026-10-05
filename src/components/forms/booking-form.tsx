@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { cancelBookingAction, confirmBookingAction, createBookingAction } from "@/server/actions";
+import { cancelBookingAction, confirmBookingAction, createBookingAction, extendHoldAction, requestHoldExtensionAction } from "@/server/actions";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/field";
 
@@ -61,10 +61,12 @@ export function BookingForm({
   );
 }
 
-export function BookingDecisions({ id, status }: { id: string; status: string }) {
+export function BookingDecisions({ id, status, reserved, canExtend, canRequest }: { id: string; status: string; reserved: boolean; canExtend: boolean; canRequest: boolean }) {
   const router = useRouter();
   const [error, setError] = useState("");
   const [reason, setReason] = useState("");
+  const [holdReason, setHoldReason] = useState("");
+  const [proposedExpiry, setProposedExpiry] = useState("");
   const [override, setOverride] = useState(false);
   return (
     <div className="space-y-3">
@@ -89,6 +91,31 @@ export function BookingDecisions({ id, status }: { id: string; status: string })
         }}>
           <Input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Cancellation reason" />
           <Button type="submit" variant="destructive">Cancel booking</Button>
+        </form>
+      ) : null}
+      {(status === "tentative" || status === "awaiting_deposit") && !reserved && canExtend ? (
+        <form className="space-y-2" onSubmit={async (event) => {
+          event.preventDefault();
+          const result = await extendHoldAction(id, reason);
+          if (!result.ok) setError(result.error);
+          else router.refresh();
+        }}>
+          <p className="text-sm">The venue is not reserved. Extending the hold needs a reason and a free space.</p>
+          <Input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Why should this hold be reinstated?" />
+          <Button type="submit" variant="secondary">Reinstate hold</Button>
+        </form>
+      ) : null}
+      {(status === "tentative" || status === "awaiting_deposit") && canRequest && !canExtend ? (
+        <form className="space-y-2" onSubmit={async (event) => {
+          event.preventDefault();
+          const result = await requestHoldExtensionAction(id, holdReason, proposedExpiry);
+          if (!result.ok) setError(result.error);
+          else router.refresh();
+        }}>
+          <p className="text-sm">Request a hold extension. The venue stays as it is until Operations or Leadership approves the proposed expiry.</p>
+          <Input value={holdReason} onChange={(event) => setHoldReason(event.target.value)} placeholder="Why should this hold be extended?" />
+          <Input type="datetime-local" value={proposedExpiry} onChange={(event) => setProposedExpiry(event.target.value)} />
+          <Button type="submit" variant="secondary">Request hold extension</Button>
         </form>
       ) : null}
       {error ? <p className="text-sm text-destructive">{error}</p> : null}

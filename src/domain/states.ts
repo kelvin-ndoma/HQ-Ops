@@ -282,8 +282,31 @@ export function transitionVendorAssignment(
   return { ok: true };
 }
 
-export function blocksCalendar(status: BookingStatus, holdExpiresAt: Date | null, now: Date): boolean {
-  if (status === "confirmed" || status === "awaiting_deposit") return true;
-  if (status === "tentative") return !holdExpiresAt || holdExpiresAt > now;
-  return false;
+export function spaceReserved(
+  booking: {
+    status: BookingStatus;
+    holdExpiresAt?: Date | string | null;
+    holdReleasedAt?: Date | string | null;
+  },
+  now: Date,
+): boolean {
+  if (booking.status === "confirmed") return true;
+  if (booking.status !== "tentative" && booking.status !== "awaiting_deposit") return false;
+  if (booking.holdReleasedAt) return false;
+  if (!booking.holdExpiresAt) return false;
+  return new Date(booking.holdExpiresAt).getTime() > now.getTime();
+}
+
+export function holdShouldRelease(
+  booking: {
+    status: BookingStatus;
+    holdExpiresAt?: Date | string | null;
+    holdReleasedAt?: Date | string | null;
+  },
+  now: Date,
+): boolean {
+  if (booking.holdReleasedAt) return false;
+  if (booking.status !== "tentative" && booking.status !== "awaiting_deposit") return false;
+  if (!booking.holdExpiresAt) return true;
+  return new Date(booking.holdExpiresAt).getTime() <= now.getTime();
 }

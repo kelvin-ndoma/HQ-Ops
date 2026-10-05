@@ -1,4 +1,5 @@
 import {
+  DEMO_APPROVAL_THRESHOLDS,
   DEFAULT_AUTOMATION,
   DEFAULT_COMMERCIAL,
   DEFAULT_NOTIFICATIONS,
@@ -45,6 +46,12 @@ async function ensureConfiguration() {
   ] as const;
   for (const [key, value] of settings) {
     await SystemSetting.updateOne({ key }, { $setOnInsert: { key, value } }, { upsert: true });
+  }
+  const commercial = await SystemSetting.findOne({ key: "commercial" });
+  if (commercial && commercial.value && typeof commercial.value === "object" && !("approvals" in commercial.value)) {
+    commercial.set("value.approvals", DEMO_APPROVAL_THRESHOLDS);
+    commercial.markModified("value");
+    await commercial.save();
   }
   await catalog(EventType, INITIAL_EVENT_TYPES);
   await catalog(LeadSource, INITIAL_SOURCES);

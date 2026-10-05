@@ -1,9 +1,11 @@
 import type { ClientSession } from "mongoose";
 import { priceQuotation, requiredDeposit, summarizePayments } from "../../domain/money";
-import { eventRange } from "../../domain/operations";
+import { combineNairobi, eventRange } from "../../domain/operations";
 import type { BookingInput, QuoteInput } from "../../domain/schemas";
+import { discountNeedsApproval, priceBelowMinimum, quotationDiscountPercent } from "../../domain/approvals";
 import {
   quotationEditMode,
+  spaceReserved,
   transitionBooking,
   transitionQuote,
   type QuoteStatus,
@@ -50,8 +52,12 @@ async function conflictingBookings(spaceIds: string[], start: Date, end: Date, e
     startAt: { $lt: end },
     endAt: { $gt: start },
     $or: [
-      { status: { $in: ["awaiting_deposit", "confirmed"] } },
-      { status: "tentative", holdExpiresAt: { $gt: now } },
+      { status: "confirmed" },
+      {
+        status: { $in: ["tentative", "awaiting_deposit"] },
+        holdReleasedAt: null,
+        holdExpiresAt: { $gt: now },
+      },
     ],
   };
   const query = Booking.find(filter).select("reference status startAt endAt spaceIds");
@@ -62,7 +68,7 @@ async function conflictingBookings(spaceIds: string[], start: Date, end: Date, e
 export async function assertSpaceAvailable(spaceIds: string[], start: Date, end: Date, excludeId?: string, session?: ClientSession | null) {
   const conflicts = await conflictingBookings(spaceIds, start, end, excludeId, session);
   if (conflicts.length > 0) {
-    throw new AppError(`That time overlaps ${conflicts.map((item) => item.reference).join(", ")}. Confirmed bookings and active holds cannot double-book a space.`);
+    throw new AppError(`That time overlaps ${conflicts.map((item) => item.reference).join(", ")}. Confirmed bookings and unexpired holds cannot double-book a space.`);
   }
 }
 
@@ -212,6 +218,45 @@ export async function setQuotationStatus(actor: SessionUser, id: string, status:
   const previous = quote.status;
   if (status === "sent") {
     const commercial = await getCommercial();
+    const gross = (version.lines || []).reduce((sum: number, line: { quantity?: number; unitPriceCents?: number }) => sum + Math.round((line.quantity || 0) * (line.unitPriceCents || 0)), 0);
+    const discountPercent = quotationDiscountPercent(gross, version.discountCents || 0);
+    const belowMinimum = (version.lines || []).some((line: { unitPriceCents?: number }) => priceBelowMinimum(line.unitPriceCents || 0, commercial.approvals));
+    const discountBlocked = discountNeedsApproval(discountPercent, commercial.approvals);
+    if (discountBlocked || belowMinimum) {
+      const { ApprovalRequest } = await import("../models");
+      const actionType = belowMinimum ? "quote_below_minimum" : "discount_threshold";
+      const approved = await ApprovalRequest.findOne({
+        entityType: "quotation",
+        entityId: id,
+        actionType,
+        status: "approved",
+        "proposedValue.version": version.version,
+      });
+      if (!approved) {
+        if (can(actor.role, "quotes.override_price") && reason && reason.trim().length >= 3) {
+          const { recordOverride } = await import("../overrides");
+          await recordOverride({
+            actorId: actor.id,
+            entityType: "quotation",
+            entityId: id,
+            action: actionType,
+            reason,
+            permission: "quotes.override_price",
+          });
+        } else {
+          const { submitApproval } = await import("./approvals");
+          await submitApproval(actor, {
+            entityType: "quotation",
+            entityId: id,
+            actionType,
+            reason: reason || "Quotation is outside the configured commercial threshold.",
+            originalValue: { version: version.version, totalCents: version.totalCents },
+            proposedValue: { version: version.version, totalCents: version.totalCents, discountPercent },
+          });
+          throw new AppError("This quotation is outside the configured threshold. It stays a draft until the approval is granted. The version was not overwritten.");
+        }
+      }
+    }
     quote.validUntil = new Date(Date.now() + commercial.quotationValidityDays * 24 * 60 * 60 * 1000);
     const previousVersions = await QuotationVersion.find({
       quotationId: quote._id,
@@ -351,7 +396,7 @@ export async function createBooking(actor: SessionUser, input: BookingInput) {
     specialConditions: input.specialConditions || "",
     ownerId: input.ownerId || actor.id,
     status,
-    holdExpiresAt: status === "tentative" ? new Date(Date.now() + holdHours * 60 * 60 * 1000) : undefined,
+    holdExpiresAt: status === "tentative" || status === "awaiting_deposit" ? new Date(Date.now() + holdHours * 60 * 60 * 1000) : undefined,
     createdBy: actor.id,
   });
   await recordAudit({
@@ -392,8 +437,38 @@ export async function createBooking(actor: SessionUser, input: BookingInput) {
   return sid(booking._id);
 }
 
-export async function confirmBooking(actor: SessionUser, id: string, options: { overrideDeposit?: boolean; reason?: string }) {
+export async function confirmBooking(actor: SessionUser, id: string, options: { overrideDeposit?: boolean; reason?: string; approvalId?: string }) {
   await connectDB();
+  const preview = await Booking.findOne({ _id: id, archivedAt: null });
+  if (!preview) throw new AppError("Booking not found.", "not_found");
+  const previewMoney = await syncBookingMoney(sid(preview._id));
+  const depositShort = (previewMoney?.depositReceivedCents || 0) < (previewMoney?.depositRequiredCents || 0);
+  if (depositShort && !options.approvalId) {
+    if (options.overrideDeposit) {
+      if (!can(actor.role, "bookings.override_deposit")) throw new AppError("You cannot override the deposit rule.", "forbidden");
+      if (!options.reason || options.reason.trim().length < 3) throw new AppError("Give a reason for confirming before the deposit is received.");
+      const { recordOverride } = await import("../overrides");
+      await recordOverride({
+        actorId: actor.id,
+        entityType: "booking",
+        entityId: id,
+        action: "confirm_without_deposit",
+        reason: options.reason,
+        permission: "bookings.override_deposit",
+      });
+    } else {
+      const { submitApproval } = await import("./approvals");
+      await submitApproval(actor, {
+        entityType: "booking",
+        entityId: id,
+        actionType: "confirm_without_deposit",
+        reason: options.reason || "Deposit has not been received.",
+        originalValue: { status: preview.status, depositReceivedCents: previewMoney?.depositReceivedCents, depositRequiredCents: previewMoney?.depositRequiredCents },
+        proposedValue: { status: "confirmed" },
+      });
+      throw new AppError("Confirmation is waiting for approval. The booking stays Awaiting Deposit, and the space follows the venue hold.");
+    }
+  }
   return withTransaction(async (session) => {
     const query = Booking.findOne({ _id: id, archivedAt: null });
     if (session) query.session(session);
@@ -404,16 +479,8 @@ export async function confirmBooking(actor: SessionUser, id: string, options: { 
     await assertSpaceAvailable(booking.spaceIds.map(sid), booking.startAt, booking.endAt, sid(booking._id), session);
     const fresh = await syncBookingMoney(sid(booking._id), session);
     if (!fresh) throw new AppError("Booking not found.", "not_found");
-    if (fresh.depositReceivedCents < fresh.depositRequiredCents) {
-      if (!options.overrideDeposit) {
-        throw new AppError("The configured deposit has not been received. Confirming now needs an authorised override and a reason.");
-      }
-      if (!can(actor.role, "bookings.override_deposit")) {
-        throw new AppError("You cannot override the deposit rule.", "forbidden");
-      }
-      if (!options.reason || options.reason.trim().length < 3) {
-        throw new AppError("Give a reason for confirming before the deposit is received.");
-      }
+    if (fresh.depositReceivedCents < fresh.depositRequiredCents && !options.overrideDeposit && !options.approvalId) {
+      throw new AppError("The configured deposit has not been received.");
     }
     const previous = fresh.status;
     fresh.status = "confirmed";
@@ -537,7 +604,95 @@ export async function getBooking(id: string) {
     EventRecord.findOne({ bookingId: booking._id }).lean(),
     booking.quotationId ? Quotation.findById(booking.quotationId).lean() : null,
   ]);
-  return { booking, client, spaces, payments, event, quote };
+  return { booking, client, spaces, payments, event, quote, spaceReserved: spaceReserved(booking, new Date()) };
+}
+
+function parseHoldExpiry(value: string) {
+  const text = value.trim();
+  const local = text.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+  const zoned = /(?:Z|[+-]\d{2}:\d{2})$/.test(text);
+  const expiry = local && !zoned ? combineNairobi(local[1], local[2]) : new Date(text);
+  if (Number.isNaN(expiry.getTime())) throw new AppError("Give a valid proposed expiry.");
+  return expiry;
+}
+
+async function writeHold(actor: SessionUser, id: string, nextExpiry: Date, reason: string, direct: boolean) {
+  const booking = await Booking.findOne({ _id: id, archivedAt: null });
+  if (!booking) throw new AppError("Booking not found.", "not_found");
+  if (booking.status !== "tentative" && booking.status !== "awaiting_deposit") {
+    throw new AppError("Only an open hold can be extended. Confirmed bookings already reserve the space.");
+  }
+  if (nextExpiry.getTime() <= Date.now()) throw new AppError("The proposed expiry must be in the future.");
+  await assertSpaceAvailable(booking.spaceIds.map(sid), booking.startAt, booking.endAt, sid(booking._id));
+  const previous = booking.holdExpiresAt;
+  const status = booking.status;
+  booking.holdExpiresAt = nextExpiry;
+  booking.holdReleasedAt = null;
+  booking.holdExpired = false;
+  await booking.save();
+  if (direct) {
+    const { recordOverride } = await import("../overrides");
+    await recordOverride({
+      actorId: actor.id,
+      entityType: "booking",
+      entityId: id,
+      action: "extend_hold",
+      reason,
+      permission: "bookings.extend_hold",
+    });
+  }
+  await recordAudit({
+    actorId: actor.id,
+    action: "booking.hold",
+    entityType: "booking",
+    entityId: id,
+    previousValue: { holdExpiresAt: previous, status },
+    newValue: { holdExpiresAt: nextExpiry, status },
+    reason,
+  });
+  return sid(booking._id);
+}
+
+export async function extendHold(actor: SessionUser, id: string, reason: string) {
+  await connectDB();
+  if (!can(actor.role, "bookings.extend_hold")) throw new AppError("You cannot extend a venue hold.", "forbidden");
+  if (!reason || reason.trim().length < 3) throw new AppError("Give a reason for extending the hold.");
+  const commercial = await getCommercial();
+  const nextExpiry = new Date(Date.now() + commercial.holdDurationHours * 60 * 60 * 1000);
+  return writeHold(actor, id, nextExpiry, reason.trim(), true);
+}
+
+export async function requestHoldExtension(actor: SessionUser, id: string, reason: string, proposedExpiry: string) {
+  await connectDB();
+  if (!can(actor.role, "bookings.request_hold")) throw new AppError("You cannot request a venue hold extension.", "forbidden");
+  if (!reason || reason.trim().length < 3) throw new AppError("Give a reason for the hold extension.");
+  const expiry = parseHoldExpiry(proposedExpiry);
+  if (expiry.getTime() <= Date.now()) throw new AppError("The proposed expiry must be in the future.");
+  const booking = await Booking.findOne({ _id: id, archivedAt: null });
+  if (!booking) throw new AppError("Booking not found.", "not_found");
+  if (booking.status !== "tentative" && booking.status !== "awaiting_deposit") {
+    throw new AppError("Only an open hold can be extended. Confirmed bookings already reserve the space.");
+  }
+  const { submitApproval } = await import("./approvals");
+  return submitApproval(actor, {
+    entityType: "booking",
+    entityId: id,
+    actionType: "hold_extension",
+    reason: reason.trim(),
+    originalValue: {
+      status: booking.status,
+      holdExpiresAt: booking.holdExpiresAt,
+      holdReleasedAt: booking.holdReleasedAt,
+    },
+    proposedValue: { holdExpiresAt: expiry.toISOString() },
+  });
+}
+
+export async function applyApprovedHoldExtension(actor: SessionUser, id: string, expiresAt: Date, reason: string) {
+  await connectDB();
+  const { canReviewApproval } = await import("./approvals");
+  if (!canReviewApproval(actor.role, "hold_extension")) throw new AppError("You cannot extend a venue hold.", "forbidden");
+  return writeHold(actor, id, expiresAt, reason, false);
 }
 
 export async function calendarItems(start: Date, end: Date) {
@@ -570,6 +725,7 @@ export async function recordPaymentAndMaybeConfirm(
     reference?: string;
     notes?: string;
     idempotencyKey: string;
+    approved?: boolean;
   },
 ) {
   await connectDB();
@@ -587,6 +743,28 @@ export async function recordPaymentAndMaybeConfirm(
       booking.agreedAmountCents,
     );
     if (input.amountCents > summary.netCents) throw new AppError("Refund cannot exceed the net amount collected.");
+    const commercial = await getCommercial();
+    const { aboveThreshold } = await import("../../domain/approvals");
+    if (!input.approved && aboveThreshold(input.amountCents, commercial.approvals.refundCents)) {
+      const { submitApproval } = await import("./approvals");
+      await submitApproval(actor, {
+        entityType: "booking",
+        entityId: sid(booking._id),
+        actionType: "refund",
+        reason: input.notes || "Refund above the configured threshold.",
+        originalValue: { netCents: summary.netCents },
+        proposedValue: {
+          clientId: input.clientId,
+          bookingId: input.bookingId,
+          amountCents: input.amountCents,
+          methodId: input.methodId,
+          paidAt: input.paidAt,
+          reference: input.reference || "",
+          notes: input.notes || "",
+        },
+      });
+      throw new AppError("This refund is above the configured threshold. It was not recorded. An approval request is waiting.");
+    }
   }
   const event = await EventRecord.findOne({ bookingId: booking._id }).select("_id");
   const previous = {

@@ -29,7 +29,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const headerList = await headers();
   const pathname = headerList.get("x-hq-path") || "/";
   const unread = await Notification.countDocuments({ userId: user.id, readAt: null });
-  const items = NAV.flatMap((group) => group.items).filter((item) => !item.permission || can(user.role, item.permission));
+  const items = NAV.flatMap((group) => group.items).filter((item) => {
+    if (item.anyOf?.length) return item.anyOf.some((permission) => can(user.role, permission));
+    return !item.permission || can(user.role, item.permission);
+  });
   const quick = QUICK_CREATE.filter((item) => can(user.role, item.permission));
   return (
     <Chrome user={{ name: user.name, role: user.role }} unread={unread} items={items} quick={quick} pathname={pathname}>

@@ -33,7 +33,7 @@ import { requirePermission, requireUser } from "./guard";
 import { actionError, type ActionResult } from "./errors";
 import { createEnquiry, createClient, createVisit, transitionEnquiryStage, updateEnquiry, updateVisit, addNote, saveCatalog } from "./services/crm";
 import { EventType, InventoryCategory, LeadSource, LostReason, PaymentMethod, ServiceItem, Space, VendorCategory } from "./models";
-import { cancelBooking, confirmBooking, createBooking, createQuotation, recordPaymentAndMaybeConfirm, reviseQuotation, setQuotationStatus } from "./services/commercial";
+import { cancelBooking, confirmBooking, createBooking, createQuotation, extendHold, recordPaymentAndMaybeConfirm, requestHoldExtension, reviseQuotation, setQuotationStatus } from "./services/commercial";
 import { addEventCost, assignVendor, createProcurement, createTask, createVendor, setProcurementStatus, setTaskStatus, setVendorAssignment, toggleCloseout, updateEvent } from "./services/events";
 import { createItem, issueReserved, moveStock, reserveForEvent, returnIssued } from "./services/inventory";
 import { createManagedUser, updateManagedUser } from "./services/users";
@@ -210,6 +210,44 @@ export async function confirmBookingAction(input: unknown) {
     revalidatePath("/events");
     revalidatePath("/");
     return done(result);
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function extendHoldAction(id: string, reason: string) {
+  const user = await requireUser();
+  try {
+    requirePermission(user, "bookings.extend_hold");
+    await extendHold(user, id, reason);
+    revalidatePath(`/bookings/${id}`);
+    revalidatePath("/calendar");
+    return done();
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function requestHoldExtensionAction(id: string, reason: string, proposedExpiry: string) {
+  const user = await requireUser();
+  try {
+    requirePermission(user, "bookings.request_hold");
+    await requestHoldExtension(user, id, reason, proposedExpiry);
+    revalidatePath(`/bookings/${id}`);
+    revalidatePath("/approvals");
+    return done();
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function reviewApprovalAction(id: string, decision: "approved" | "rejected", notes: string) {
+  const user = await requireUser();
+  try {
+    const { reviewApproval } = await import("./services/approvals");
+    await reviewApproval(user, id, decision, notes);
+    revalidatePath("/approvals");
+    return done();
   } catch (error) {
     return fail(error);
   }
@@ -519,11 +557,17 @@ export async function saveCommercialAction(input: {
   depositMode: "percent" | "fixed" | "none";
   depositPercent: number | null;
   depositFixedShillings: number | null;
+  maxDiscountPercent: number | null;
+  inventoryWriteOffShillings: number | null;
+  procurementShillings: number | null;
+  minimumUnitPriceShillings: number | null;
+  refundShillings: number | null;
 }) {
   const user = await requireUser();
   try {
-    requirePermission(user, "settings.write");
+    requirePermission(user, "settings.commercial");
     const previous = await getCommercial();
+    const cents = (shillings: number | null) => (shillings == null ? null : Math.round(shillings * 100));
     await saveSetting(user.id, "commercial", {
       quotationValidityDays: input.quotationValidityDays,
       taxEnabled: input.taxEnabled,
@@ -536,6 +580,13 @@ export async function saveCommercialAction(input: {
         percent: input.depositPercent,
         fixedCents: input.depositFixedShillings == null ? null : Math.round(input.depositFixedShillings * 100),
       },
+      approvals: {
+        maxDiscountPercent: input.maxDiscountPercent,
+        inventoryWriteOffCents: cents(input.inventoryWriteOffShillings),
+        procurementCents: cents(input.procurementShillings),
+        minimumUnitPriceCents: cents(input.minimumUnitPriceShillings),
+        refundCents: cents(input.refundShillings),
+      },
     }, previous);
     revalidatePath("/settings");
     return done();
@@ -547,7 +598,7 @@ export async function saveCommercialAction(input: {
 export async function saveOrganizationAction(input: { name: string; legalName: string; address: string; city: string; phone: string; email: string; website: string }) {
   const user = await requireUser();
   try {
-    requirePermission(user, "settings.write");
+    requirePermission(user, "settings.system");
     const previous = await getOrganization();
     await saveSetting(user.id, "organization", { ...previous, ...input, currency: "KES", timezone: "Africa/Nairobi" }, previous);
     revalidatePath("/settings");
@@ -567,7 +618,7 @@ export async function saveAutomationAction(input: {
 }) {
   const user = await requireUser();
   try {
-    requirePermission(user, "settings.write");
+    requirePermission(user, "settings.operations");
     const previous = await getAutomation();
     await saveSetting(user.id, "automation", { ...previous, ...input }, previous);
     revalidatePath("/settings");
@@ -580,7 +631,7 @@ export async function saveAutomationAction(input: {
 export async function saveNotificationPrefsAction(input: { inApp: boolean; emailEnabled: boolean; whatsappEnabled: boolean }) {
   const user = await requireUser();
   try {
-    requirePermission(user, "settings.write");
+    requirePermission(user, "settings.system");
     const previous = await getNotificationSettings();
     await saveSetting(user.id, "notifications", input, previous);
     revalidatePath("/settings");
@@ -593,7 +644,7 @@ export async function saveNotificationPrefsAction(input: { inApp: boolean; email
 export async function saveAssignmentAction(defaultOwnerId: string) {
   const user = await requireUser();
   try {
-    requirePermission(user, "settings.write");
+    requirePermission(user, "settings.operations");
     const previous = await getAssignment();
     await saveSetting(user.id, "assignment", { defaultOwnerId: defaultOwnerId || null }, previous);
     return done();
@@ -605,7 +656,11 @@ export async function saveAssignmentAction(defaultOwnerId: string) {
 export async function saveCatalogAction(kind: "event-type" | "source" | "lost-reason" | "inventory-category" | "vendor-category" | "payment-method" | "space" | "service", input: { id?: string; name: string; description?: string; active?: boolean; capacity?: number; unitPriceShillings?: number; unit?: string }) {
   const user = await requireUser();
   try {
-    requirePermission(user, "settings.write");
+    const operational = new Set(["event-type", "inventory-category", "vendor-category", "space"]);
+    const commercial = new Set(["source", "lost-reason", "payment-method", "service"]);
+    if (operational.has(kind)) requirePermission(user, "settings.operations");
+    else if (commercial.has(kind)) requirePermission(user, "settings.commercial");
+    else requirePermission(user, "settings.system");
     const map = {
       "event-type": EventType,
       source: LeadSource,

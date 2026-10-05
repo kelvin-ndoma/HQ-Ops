@@ -217,6 +217,7 @@ const BookingSchema = new Schema(
     ownerId: { type: Schema.Types.ObjectId, ref: "User", index: true },
     status: { type: String, required: true, index: true },
     holdExpiresAt: Date,
+    holdReleasedAt: { type: Date, default: null },
     holdExpired: { type: Boolean, default: false },
     cancellationReason: { type: String, default: "" },
     archivedAt: { type: Date, default: null },
@@ -473,6 +474,37 @@ const SettingSchema = new Schema(
   { timestamps: true },
 );
 
+const ApprovalSchema = new Schema(
+  {
+    entityType: { type: String, required: true, index: true },
+    entityId: { type: String, required: true, index: true },
+    actionType: { type: String, required: true, index: true },
+    requestedBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    requestedAt: { type: Date, default: Date.now },
+    reason: { type: String, default: "" },
+    originalValue: { type: Schema.Types.Mixed },
+    proposedValue: { type: Schema.Types.Mixed },
+    status: { type: String, default: "pending", index: true },
+    reviewedBy: { type: Schema.Types.ObjectId, ref: "User" },
+    reviewedAt: Date,
+    reviewerNotes: { type: String, default: "" },
+  },
+  { timestamps: true },
+);
+
+const OverrideSchema = new Schema(
+  {
+    entityType: { type: String, required: true, index: true },
+    entityId: { type: String, required: true, index: true },
+    action: { type: String, required: true },
+    reason: { type: String, required: true },
+    permission: { type: String, required: true },
+    actorId: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { versionKey: false },
+);
+
 const CounterSchema = new Schema({
   key: { type: String, required: true, unique: true },
   seq: { type: Number, default: 0 },
@@ -510,5 +542,7 @@ export const EventCost = register("EventCost", EventCostSchema);
 export const Notification = register("Notification", NotificationSchema);
 export const ActivityEvent = register("ActivityEvent", ActivitySchema);
 export const AuditLog = register("AuditLog", AuditSchema);
+export const ApprovalRequest = register("ApprovalRequest", ApprovalSchema);
+export const OverrideLog = register("OverrideLog", OverrideSchema);
 export const SystemSetting = register("SystemSetting", SettingSchema);
 export const Counter = register("Counter", CounterSchema);

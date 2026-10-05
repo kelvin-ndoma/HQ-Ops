@@ -27,6 +27,14 @@ export type OrganizationSettings = {
   timezone: string;
 };
 
+export type ApprovalThresholds = {
+  maxDiscountPercent: number | null;
+  inventoryWriteOffCents: number | null;
+  procurementCents: number | null;
+  minimumUnitPriceCents: number | null;
+  refundCents: number | null;
+};
+
 export type CommercialSettings = {
   quotationValidityDays: number;
   taxEnabled: boolean;
@@ -35,6 +43,7 @@ export type CommercialSettings = {
   holdDurationHours: number;
   staleEnquiryDays: number;
   deposit: DepositRule;
+  approvals: ApprovalThresholds;
 };
 
 export type AutomationSettings = {
@@ -79,6 +88,22 @@ export const DEFAULT_COMMERCIAL: CommercialSettings = {
   holdDurationHours: 72,
   staleEnquiryDays: 7,
   deposit: { mode: "none", percent: null, fixedCents: null },
+  approvals: {
+    maxDiscountPercent: null,
+    inventoryWriteOffCents: null,
+    procurementCents: null,
+    minimumUnitPriceCents: null,
+    refundCents: null,
+  },
+};
+
+/** Written by the development seed only. These are not HQ's commercial policy. */
+export const DEMO_APPROVAL_THRESHOLDS: ApprovalThresholds = {
+  maxDiscountPercent: 10,
+  inventoryWriteOffCents: 1_000_000,
+  procurementCents: 5_000_000,
+  minimumUnitPriceCents: null,
+  refundCents: 1_000_000,
 };
 
 export const DEFAULT_AUTOMATION: AutomationSettings = {

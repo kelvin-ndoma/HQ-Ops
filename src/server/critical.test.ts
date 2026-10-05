@@ -152,7 +152,8 @@ describe("critical operations", () => {
     const { InventoryCategory, InventoryItem, InventoryReservation } = await import("./models");
     const category = await InventoryCategory.create({ name: "Furniture", slug: "furniture-test", active: true });
     const itemId = await createItem({ ...actor, role: "operations_lead" }, { name: "Chair", sku: "CHAIR-1", categoryId: String(category._id), assetType: "durable", quantity: 10, reorderLevel: 2, unitCostCents: 100 });
-    await expect(reserveForEvent(actor, { eventId: String(event!._id), itemId, quantity: 12 })).rejects.toThrow(/available/i);
+    await expect(reserveForEvent(actor, { eventId: String(event!._id), itemId, quantity: 12 })).rejects.toThrow(/allocations/i);
+    await expect(reserveForEvent({ ...actor, role: "operations_lead" }, { eventId: String(event!._id), itemId, quantity: 12 })).rejects.toThrow(/available/i);
     await reserveForEvent({ ...actor, role: "operations_lead" }, { eventId: String(event!._id), itemId, quantity: 12, override: true, reason: "Client is bringing no extras and we will hire the gap." });
     const reservation = await InventoryReservation.findOne({ itemId, eventId: event!._id });
     await issueReserved({ ...actor, role: "operations_lead" }, String(reservation!._id), 10);
@@ -170,5 +171,111 @@ describe("critical operations", () => {
     const audits = await AuditLog.countDocuments({ entityType: "enquiry", action: "enquiry.stage" });
     expect(audits).toBeGreaterThan(0);
     await expect(AuditLog.updateOne({ _id: (await AuditLog.findOne())!._id }, { reason: "tamper" })).rejects.toThrow(/cannot be modified/i);
+  });
+
+  it("releases an expired deposit hold without cancelling the booking", async () => {
+    const { User, Space, EventType, LeadSource, SystemSetting, Booking, ActivityEvent, Notification, OverrideLog, Enquiry, ApprovalRequest, AuditLog } = await import("./models");
+    const { createEnquiry } = await import("./services/crm");
+    const { createBooking, extendHold, requestHoldExtension } = await import("./services/commercial");
+    const { reviewApproval } = await import("./services/approvals");
+    const { sweep } = await import("./automation");
+    const sales = await User.create({ name: "Hold Sales", email: "hold-sales@test.local", role: "sales_coordinator", passwordHash: "x", active: true });
+    const actor = { id: String(sales._id), name: sales.name, email: sales.email, role: "sales_coordinator" as const };
+    const eventType = await EventType.findOne() || await EventType.create({ name: "Dinner", slug: "dinner-hold", active: true });
+    const source = await LeadSource.findOne() || await LeadSource.create({ name: "Phone", slug: "phone-hold", active: true });
+    const terrace = await Space.create({ name: "Terrace Hold", slug: "terrace-hold", capacity: 40, active: true });
+    await SystemSetting.updateOne(
+      { key: "commercial" },
+      { $setOnInsert: { key: "commercial", value: { quotationValidityDays: 14, taxEnabled: false, defaultTaxRate: 0, defaultTerms: "Terms", holdDurationHours: 72, staleEnquiryDays: 7, deposit: { mode: "percent", percent: 40, fixedCents: null } } } },
+      { upsert: true },
+    );
+    const enquiryId = await createEnquiry(actor, {
+      fullName: "Hold Client", phone: "0799000111", preferredContact: "phone", eventTypeId: String(eventType._id), sourceId: String(source._id), ownerId: actor.id, priority: "normal", spaceIds: [],
+    });
+    const enquiry = await Enquiry.findById(enquiryId);
+    const bookingId = await createBooking(actor, {
+      clientId: String(enquiry!.clientId),
+      enquiryId,
+      eventDate: "2026-12-12",
+      startTime: "18:00",
+      endTime: "22:00",
+      spaceIds: [String(terrace._id)],
+      guestCount: 20,
+      agreedShillings: 80000,
+      mode: "commit",
+      ownerId: actor.id,
+    });
+    const open = await Booking.findById(bookingId);
+    expect(open?.status).toBe("awaiting_deposit");
+    open!.holdExpiresAt = new Date("2026-01-01T00:00:00Z");
+    await open!.save();
+    await sweep(true);
+    const released = await Booking.findById(bookingId);
+    expect(released?.status).toBe("awaiting_deposit");
+    expect(released?.holdReleasedAt).toBeTruthy();
+    expect(await ActivityEvent.countDocuments({ entityId: bookingId, kind: "system", summary: /no longer reserved/i })).toBe(1);
+    expect(await Notification.countDocuments({ userId: actor.id, type: "booking.hold_expired" })).toBe(1);
+    const replacement = await createBooking(actor, {
+      clientId: String(enquiry.clientId),
+      eventDate: "2026-12-12",
+      startTime: "18:00",
+      endTime: "22:00",
+      spaceIds: [String(terrace._id)],
+      guestCount: 12,
+      agreedShillings: 40000,
+      mode: "hold",
+      ownerId: actor.id,
+    });
+    expect(replacement).toBeTruthy();
+    await Booking.deleteOne({ _id: replacement });
+    await expect(extendHold(actor, bookingId, "Client asked for one more day to pay the deposit.")).rejects.toThrow(/extend/i);
+    await expect(extendHold({ ...actor, role: "event_staff" }, bookingId, "Need another day for the deposit.")).rejects.toThrow(/extend/i);
+    const untouched = await Booking.findById(bookingId);
+    expect(untouched?.status).toBe("awaiting_deposit");
+    expect(untouched?.holdReleasedAt).toBeTruthy();
+
+    const finance = await User.create({ name: "Hold Finance", email: "hold-finance@test.local", role: "finance", passwordHash: "x", active: true });
+    const operations = await User.create({ name: "Hold Ops", email: "hold-ops@test.local", role: "operations_lead", passwordHash: "x", active: true });
+    const leadership = await User.create({ name: "Hold Lead", email: "hold-lead@test.local", role: "leadership", passwordHash: "x", active: true });
+    const financeActor = { id: String(finance._id), name: finance.name, email: finance.email, role: "finance" as const };
+    const operationsActor = { id: String(operations._id), name: operations.name, email: operations.email, role: "operations_lead" as const };
+    const leadershipActor = { id: String(leadership._id), name: leadership.name, email: leadership.email, role: "leadership" as const };
+
+    const rejectedId = await requestHoldExtension(actor, bookingId, "Client needs two more days.", new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString());
+    const pending = await Booking.findById(bookingId);
+    expect(pending?.status).toBe("awaiting_deposit");
+    expect(pending?.holdReleasedAt).toBeTruthy();
+    expect(await ApprovalRequest.countDocuments({ _id: rejectedId, status: "pending", actionType: "hold_extension" })).toBe(1);
+    await expect(reviewApproval(financeActor, rejectedId, "rejected", "Outside finance scope.")).rejects.toThrow(/review/i);
+    await reviewApproval(operationsActor, rejectedId, "rejected", "Space is pencilled for another visit.");
+    const afterRejection = await Booking.findById(bookingId);
+    expect(afterRejection?.status).toBe("awaiting_deposit");
+    expect(afterRejection?.holdReleasedAt).toBeTruthy();
+
+    const approvedExpiry = new Date(Date.now() + 36 * 60 * 60 * 1000);
+    const approvedId = await requestHoldExtension(actor, bookingId, "Deposit is promised for Friday.", approvedExpiry.toISOString());
+    await reviewApproval(leadershipActor, approvedId, "approved", "Hold reinstated until the proposed time.");
+    const restored = await Booking.findById(bookingId);
+    expect(restored?.status).toBe("awaiting_deposit");
+    expect(restored?.holdReleasedAt).toBeNull();
+    expect(restored!.holdExpiresAt!.getTime()).toBe(approvedExpiry.getTime());
+    await extendHold(operationsActor, bookingId, "Operations extended the hold directly.");
+    expect(await OverrideLog.countDocuments({ entityId: bookingId, action: "extend_hold" })).toBe(1);
+    expect(await ActivityEvent.countDocuments({ entityId: bookingId, kind: "override" })).toBe(1);
+    expect(await AuditLog.countDocuments({ entityId: bookingId, action: "approval.request" })).toBe(2);
+    expect(await AuditLog.countDocuments({ entityId: bookingId, action: "approval.rejected" })).toBe(1);
+    expect(await AuditLog.countDocuments({ entityId: bookingId, action: "approval.approved" })).toBe(1);
+    expect(await AuditLog.countDocuments({ entityId: bookingId, action: "booking.hold" })).toBe(2);
+    await expect(createBooking(actor, {
+      clientId: String(enquiry.clientId),
+      eventDate: "2026-12-12",
+      startTime: "18:00",
+      endTime: "22:00",
+      spaceIds: [String(terrace._id)],
+      guestCount: 12,
+      agreedShillings: 40000,
+      mode: "hold",
+      ownerId: actor.id,
+    })).rejects.toThrow(/overlaps/i);
   });
 });

@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import { DEFAULT_AUTOMATION, DEFAULT_COMMERCIAL, DEFAULT_NOTIFICATIONS, DEFAULT_ORGANIZATION, INITIAL_EVENT_TYPES, INITIAL_INVENTORY_CATEGORIES, INITIAL_LOST_REASONS, INITIAL_PAYMENT_METHODS, INITIAL_SOURCES, INITIAL_VENDOR_CATEGORIES } from "../domain/settings";
+import { DEFAULT_AUTOMATION, DEFAULT_COMMERCIAL, DEFAULT_NOTIFICATIONS, DEFAULT_ORGANIZATION, DEMO_APPROVAL_THRESHOLDS, INITIAL_EVENT_TYPES, INITIAL_INVENTORY_CATEGORIES, INITIAL_LOST_REASONS, INITIAL_PAYMENT_METHODS, INITIAL_SOURCES, INITIAL_VENDOR_CATEGORIES } from "../domain/settings";
 import { slugify } from "../domain/operations";
 import { hashPassword } from "./auth";
 import { connectDB, disconnectDB } from "./db";
@@ -83,7 +83,7 @@ async function main() {
   });
   await SystemSetting.create({
     key: "commercial",
-    value: { ...DEFAULT_COMMERCIAL, deposit: { mode: "percent", percent: 40, fixedCents: null } },
+    value: { ...DEFAULT_COMMERCIAL, deposit: { mode: "percent", percent: 40, fixedCents: null }, approvals: DEMO_APPROVAL_THRESHOLDS },
   });
   await SystemSetting.create({ key: "automation", value: DEFAULT_AUTOMATION });
   await SystemSetting.create({ key: "notifications", value: DEFAULT_NOTIFICATIONS });

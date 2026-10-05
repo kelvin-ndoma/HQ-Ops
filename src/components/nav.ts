@@ -1,6 +1,6 @@
 import type { Permission } from "@/domain/permissions";
 
-export type NavItem = { href: string; label: string; icon: string; permission?: Permission };
+export type NavItem = { href: string; label: string; icon: string; permission?: Permission; anyOf?: Permission[] };
 
 export const NAV: { label: string; items: NavItem[] }[] = [
   { label: "Overview", items: [{ href: "/", label: "Command Centre", icon: "LayoutDashboard" }] },
@@ -44,6 +44,7 @@ export const NAV: { label: string; items: NavItem[] }[] = [
     items: [
       { href: "/notifications", label: "Notifications", icon: "Bell", permission: "notifications.read" },
       { href: "/activity", label: "Activity Log", icon: "ScrollText", permission: "audit.read" },
+      { href: "/approvals", label: "Approvals", icon: "FileText", anyOf: ["approvals.review", "approvals.review_operations", "approvals.review_commercial"] },
       { href: "/settings", label: "Settings", icon: "Settings", permission: "settings.read" },
     ],
   },

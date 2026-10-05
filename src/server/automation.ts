@@ -1,4 +1,5 @@
 import { addDays, addHours, planPreparationTasks } from "../domain/operations";
+import { holdShouldRelease } from "../domain/states";
 import { connectDB } from "./db";
 import { recordActivity } from "./audit";
 import {
@@ -230,19 +231,20 @@ export async function sweep(force = false) {
     });
   }
 
-  const expiredHolds = await Booking.find({
-    status: "tentative",
-    holdExpired: { $ne: true },
-    holdExpiresAt: { $lt: now },
+  const openHolds = await Booking.find({
+    status: { $in: ["tentative", "awaiting_deposit"] },
+    holdReleasedAt: null,
     archivedAt: null,
-  }).limit(100);
-  for (const booking of expiredHolds) {
+  }).limit(200);
+  for (const booking of openHolds) {
+    if (!holdShouldRelease(booking, now)) continue;
     booking.holdExpired = true;
+    booking.holdReleasedAt = now;
     await booking.save();
     await recordActivity({
       entityType: "booking",
       entityId: String(booking._id),
-      summary: `${booking.reference} hold expired and no longer blocks the calendar.`,
+      summary: `${booking.reference} venue hold expired. Status remains ${booking.status.replaceAll("_", " ")} and the space is no longer reserved.`,
       kind: "system",
     });
     if (booking.ownerId) {
@@ -250,7 +252,7 @@ export async function sweep(force = false) {
         userId: String(booking.ownerId),
         type: "booking.hold_expired",
         title: `Hold expired · ${booking.reference}`,
-        body: "The tentative hold no longer reserves the space.",
+        body: "The venue is no longer reserved. The commercial status is unchanged.",
         href: `/bookings/${booking._id}`,
         dedupeKey: `hold-expired:${booking._id}`,
       });

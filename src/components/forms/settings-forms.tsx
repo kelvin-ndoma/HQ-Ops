@@ -7,15 +7,21 @@ import { ROLE_LABELS, ROLES, type Role } from "@/domain/permissions";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/field";
 
-export function CommercialForm({ value }: { value: { quotationValidityDays: number; taxEnabled: boolean; defaultTaxRate: number; defaultTerms: string; holdDurationHours: number; staleEnquiryDays: number; mode: "percent" | "fixed" | "none"; percent: number | null; fixedShillings: number | null } }) {
+function blankNumber(value: FormDataEntryValue | null) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  const number = Number(text);
+  return Number.isFinite(number) ? number : null;
+}
+
+export function CommercialForm({ value }: { value: { quotationValidityDays: number; taxEnabled: boolean; defaultTaxRate: number; defaultTerms: string; holdDurationHours: number; staleEnquiryDays: number; mode: "percent" | "fixed" | "none"; percent: number | null; fixedShillings: number | null; approvals: { maxDiscountPercent: number | null; inventoryWriteOffCents: number | null; procurementCents: number | null; minimumUnitPriceCents: number | null; refundCents: number | null } } }) {
   const router = useRouter();
   const [error, setError] = useState("");
+  const shillings = (cents: number | null) => (cents == null ? "" : cents / 100);
   return (
     <form className="grid gap-3 md:grid-cols-2" onSubmit={async (event) => {
       event.preventDefault();
       const form = new FormData(event.currentTarget);
-      const percent = String(form.get("percent") || "");
-      const fixed = String(form.get("fixed") || "");
       const result = await saveCommercialAction({
         quotationValidityDays: Number(form.get("validity")),
         taxEnabled: form.get("taxEnabled") === "on",
@@ -24,8 +30,13 @@ export function CommercialForm({ value }: { value: { quotationValidityDays: numb
         holdDurationHours: Number(form.get("hold")),
         staleEnquiryDays: Number(form.get("stale")),
         depositMode: String(form.get("mode")) as "percent",
-        depositPercent: percent === "" ? null : Number(percent),
-        depositFixedShillings: fixed === "" ? null : Number(fixed),
+        depositPercent: blankNumber(form.get("percent")),
+        depositFixedShillings: blankNumber(form.get("fixed")),
+        maxDiscountPercent: blankNumber(form.get("maxDiscount")),
+        inventoryWriteOffShillings: blankNumber(form.get("writeOff")),
+        procurementShillings: blankNumber(form.get("procurement")),
+        minimumUnitPriceShillings: blankNumber(form.get("minimumPrice")),
+        refundShillings: blankNumber(form.get("refund")),
       });
       if (!result.ok) setError(result.error);
       else router.refresh();
@@ -39,6 +50,11 @@ export function CommercialForm({ value }: { value: { quotationValidityDays: numb
       <label className="text-sm"><input className="mr-2" type="checkbox" name="taxEnabled" defaultChecked={value.taxEnabled} /> Charge tax</label>
       <Field label="Tax rate" hint="0.16 means 16 percent"><Input name="tax" type="number" step="0.01" defaultValue={value.defaultTaxRate} /></Field>
       <div className="md:col-span-2"><Field label="Quotation terms"><Textarea name="terms" defaultValue={value.defaultTerms} /></Field></div>
+      <Field label="Discount approval above (%)" hint="Blank turns the gate off"><Input name="maxDiscount" type="number" step="0.1" defaultValue={value.approvals.maxDiscountPercent ?? ""} /></Field>
+      <Field label="Minimum unit price (KSh)" hint="Blank turns the gate off"><Input name="minimumPrice" type="number" defaultValue={shillings(value.approvals.minimumUnitPriceCents)} /></Field>
+      <Field label="Refund approval above (KSh)" hint="Blank turns the gate off"><Input name="refund" type="number" defaultValue={shillings(value.approvals.refundCents)} /></Field>
+      <Field label="Write-off approval above (KSh)" hint="Blank turns the gate off"><Input name="writeOff" type="number" defaultValue={shillings(value.approvals.inventoryWriteOffCents)} /></Field>
+      <Field label="Procurement approval above (KSh)" hint="Blank turns the gate off"><Input name="procurement" type="number" defaultValue={shillings(value.approvals.procurementCents)} /></Field>
       {error ? <p className="text-sm text-destructive">{error}</p> : null}
       <Button type="submit">Save commercial rules</Button>
     </form>
