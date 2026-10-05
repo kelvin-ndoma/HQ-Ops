@@ -1,0 +1,225 @@
+export const ROLES = [
+  "super_admin",
+  "leadership",
+  "operations_lead",
+  "sales_coordinator",
+  "event_staff",
+  "finance",
+  "administrator",
+] as const;
+
+export type Role = (typeof ROLES)[number];
+
+export const ROLE_LABELS: Record<Role, string> = {
+  super_admin: "Super Admin",
+  leadership: "Leadership",
+  operations_lead: "Operations Lead",
+  sales_coordinator: "Sales / Event Coordinator",
+  event_staff: "Event Staff",
+  finance: "Finance",
+  administrator: "Administrator",
+};
+
+export const PERMISSIONS = [
+  "enquiries.read",
+  "enquiries.write",
+  "enquiries.assign",
+  "enquiries.transition",
+  "clients.read",
+  "clients.write",
+  "visits.read",
+  "visits.write",
+  "quotes.read",
+  "quotes.write",
+  "quotes.send",
+  "bookings.read",
+  "bookings.write",
+  "bookings.confirm",
+  "bookings.override_deposit",
+  "bookings.cancel",
+  "events.read",
+  "events.write",
+  "events.closeout",
+  "events.financials",
+  "tasks.read",
+  "tasks.write",
+  "tasks.view_team",
+  "inventory.read",
+  "inventory.write",
+  "inventory.move",
+  "inventory.override",
+  "vendors.read",
+  "vendors.write",
+  "procurement.read",
+  "procurement.write",
+  "procurement.approve",
+  "payments.read",
+  "payments.write",
+  "costs.read",
+  "costs.write",
+  "reports.sales",
+  "reports.finance",
+  "reports.operations",
+  "audit.read",
+  "settings.read",
+  "settings.write",
+  "users.read",
+  "users.manage",
+  "notifications.read",
+] as const;
+
+export type Permission = (typeof PERMISSIONS)[number];
+
+const READ_SUPPORT: Permission[] = [
+  "enquiries.read",
+  "clients.read",
+  "visits.read",
+  "quotes.read",
+  "bookings.read",
+  "events.read",
+  "tasks.read",
+  "tasks.view_team",
+  "inventory.read",
+  "vendors.read",
+  "procurement.read",
+  "payments.read",
+  "costs.read",
+  "reports.sales",
+  "reports.finance",
+  "reports.operations",
+  "audit.read",
+  "notifications.read",
+  "settings.read",
+  "users.read",
+];
+
+function allow(list: Permission[]): Set<Permission> {
+  return new Set(list);
+}
+
+const MATRIX: Record<Role, Set<Permission>> = {
+  super_admin: allow([...PERMISSIONS]),
+  leadership: allow(PERMISSIONS.filter((permission) => permission !== "users.manage")),
+  operations_lead: allow([
+    "enquiries.read",
+    "enquiries.write",
+    "enquiries.assign",
+    "enquiries.transition",
+    "clients.read",
+    "clients.write",
+    "visits.read",
+    "visits.write",
+    "quotes.read",
+    "quotes.write",
+    "quotes.send",
+    "bookings.read",
+    "bookings.write",
+    "bookings.confirm",
+    "bookings.override_deposit",
+    "bookings.cancel",
+    "events.read",
+    "events.write",
+    "events.closeout",
+    "events.financials",
+    "tasks.read",
+    "tasks.write",
+    "tasks.view_team",
+    "inventory.read",
+    "inventory.write",
+    "inventory.move",
+    "inventory.override",
+    "vendors.read",
+    "vendors.write",
+    "procurement.read",
+    "procurement.write",
+    "procurement.approve",
+    "payments.read",
+    "costs.read",
+    "costs.write",
+    "reports.sales",
+    "reports.finance",
+    "reports.operations",
+    "audit.read",
+    "settings.read",
+    "settings.write",
+    "notifications.read",
+  ]),
+  sales_coordinator: allow([
+    "enquiries.read",
+    "enquiries.write",
+    "enquiries.assign",
+    "enquiries.transition",
+    "clients.read",
+    "clients.write",
+    "visits.read",
+    "visits.write",
+    "quotes.read",
+    "quotes.write",
+    "quotes.send",
+    "bookings.read",
+    "bookings.write",
+    "bookings.confirm",
+    "bookings.cancel",
+    "events.read",
+    "events.write",
+    "events.closeout",
+    "tasks.read",
+    "tasks.write",
+    "inventory.read",
+    "vendors.read",
+    "procurement.read",
+    "procurement.write",
+    "payments.read",
+    "reports.sales",
+    "notifications.read",
+  ]),
+  event_staff: allow([
+    "visits.read",
+    "events.read",
+    "tasks.read",
+    "tasks.write",
+    "inventory.read",
+    "inventory.move",
+    "notifications.read",
+  ]),
+  finance: allow([
+    "clients.read",
+    "quotes.read",
+    "bookings.read",
+    "events.read",
+    "events.financials",
+    "vendors.read",
+    "procurement.read",
+    "payments.read",
+    "payments.write",
+    "costs.read",
+    "costs.write",
+    "reports.sales",
+    "reports.finance",
+    "audit.read",
+    "notifications.read",
+  ]),
+  administrator: allow([
+    ...READ_SUPPORT,
+    "settings.write",
+    "users.manage",
+  ]),
+};
+
+export function isRole(value: string): value is Role {
+  return (ROLES as readonly string[]).includes(value);
+}
+
+export function can(role: Role, permission: Permission): boolean {
+  return MATRIX[role].has(permission);
+}
+
+export function permissionsFor(role: Role): Permission[] {
+  return PERMISSIONS.filter((permission) => MATRIX[role].has(permission));
+}
+
+export function assertCan(role: Role, permission: Permission): void {
+  if (!can(role, permission)) {
+    throw new Error(`Missing permission: ${permission}`);
+  }
+}
