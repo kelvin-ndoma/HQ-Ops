@@ -36,7 +36,7 @@ async function ensureTask(input: {
   }
 }
 
-export async function onEnquiryCreated(enquiry: { _id: unknown; ownerId?: unknown; reference: string; contact?: { fullName?: string } }, actorId: string) {
+export async function onEnquiryCreated(enquiry: { _id: unknown; ownerId?: unknown; reference: string; contact?: { fullName?: string } }, actorId?: string | null) {
   const automation = await getAutomation();
   const ownerId = enquiry.ownerId ? String(enquiry.ownerId) : null;
   if (ownerId) {
@@ -48,7 +48,7 @@ export async function onEnquiryCreated(enquiry: { _id: unknown; ownerId?: unknow
       priority: "high",
       relatedType: "enquiry",
       relatedId: String(enquiry._id),
-      createdBy: actorId,
+      createdBy: actorId || undefined,
       automationKey: `enquiry-followup:${enquiry._id}`,
     });
     await notify({

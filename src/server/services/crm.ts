@@ -1,11 +1,10 @@
 import { combineNairobi, enquiryFlags, normalizePhone, slugify } from "../../domain/operations";
-import type { EnquiryStatus } from "../../domain/states";
-import { transitionEnquiry, transitionVisit } from "../../domain/states";
+import { ENQUIRY_EXITS, ENQUIRY_STAGES, transitionEnquiry, transitionVisit, type EnquiryStatus } from "../../domain/states";
 import { onDepositPending, onEnquiryCreated, onVisitScheduled } from "../automation";
 import { recordActivity, recordAudit } from "../audit";
 import { connectDB } from "../db";
 import { AppError } from "../errors";
-import { Booking, Client, Enquiry, EventType, LeadSource, LostReason, Payment, SiteVisit, Space, User } from "../models";
+import { Booking, Client, Enquiry, EventType, LeadSource, LostReason, Payment, Quotation, QuotationVersion, ServiceItem, SiteVisit, Space, User } from "../models";
 import { asDate, shillings, sid } from "../parse";
 import { nextReference } from "../references";
 import { getAssignment, getCommercial } from "../settings";
@@ -42,17 +41,49 @@ export async function findPossibleClients(phone: string, email?: string) {
   return Client.find({ archivedAt: null, $or: or }).limit(5).lean();
 }
 
+export async function openClientForEnquiry(
+  input: {
+    fullName: string;
+    organization?: string;
+    phone: string;
+    email?: string;
+    preferredContact: "phone" | "email" | "whatsapp";
+  },
+  actorId?: string | null,
+) {
+  const matches = await findPossibleClients(input.phone, input.email || undefined);
+  if (matches.length > 0) {
+    const existing = await Client.findById(matches[0]._id);
+    if (existing) return { client: existing, linked: true as const };
+  }
+  const client = await Client.create({
+    kind: input.organization ? "organization" : "individual",
+    name: input.fullName,
+    organizationName: input.organization || "",
+    phone: input.phone,
+    phoneNormalized: normalizePhone(input.phone),
+    email: (input.email || "").toLowerCase(),
+    preferredContact: input.preferredContact,
+    notes: "",
+    createdBy: actorId || undefined,
+  });
+  await recordAudit({
+    actorId: actorId || null,
+    action: "client.create",
+    entityType: "client",
+    entityId: sid(client._id),
+    newValue: { name: client.name, phone: client.phoneNormalized },
+  });
+  return { client, linked: false as const };
+}
+
 async function clientFromEnquiry(actor: SessionUser, input: EnquiryInput) {
   if (input.clientId) {
     const existing = await Client.findOne({ _id: input.clientId, archivedAt: null });
     if (!existing) throw new AppError("Client not found.", "not_found");
     return { client: existing, linked: true };
   }
-  const matches = await findPossibleClients(input.phone, input.email || undefined);
-  if (matches.length > 0 && !input.forceNewClient) {
-    const existing = await Client.findById(matches[0]._id);
-    if (existing) return { client: existing, linked: true };
-  }
+  if (!input.forceNewClient) return openClientForEnquiry(input, actor.id);
   const client = await Client.create({
     kind: input.organization ? "organization" : "individual",
     name: input.fullName,
@@ -168,7 +199,7 @@ export async function getEnquiry(id: string) {
   const enquiry = await Enquiry.findOne({ _id: id, archivedAt: null }).lean();
   if (!enquiry) throw new AppError("Enquiry not found.", "not_found");
   const commercial = await getCommercial();
-  const [client, eventType, source, owner, spaces, lostReason, visits] = await Promise.all([
+  const [client, eventType, source, owner, spaces, lostReason, visits, requestedServices, referrer] = await Promise.all([
     Client.findById(enquiry.clientId).lean(),
     named(EventType, sid(enquiry.eventTypeId)),
     named(LeadSource, sid(enquiry.sourceId)),
@@ -176,6 +207,8 @@ export async function getEnquiry(id: string) {
     Space.find({ _id: { $in: enquiry.spaceIds || [] } }).lean(),
     enquiry.lostReasonId ? LostReason.findById(enquiry.lostReasonId).lean() : null,
     SiteVisit.find({ enquiryId: enquiry._id, archivedAt: null }).sort({ scheduledAt: -1 }).lean(),
+    ServiceItem.find({ _id: { $in: enquiry.requestedServiceIds || [] } }).select("name").lean(),
+    enquiry.attribution?.staffId ? User.findById(enquiry.attribution.staffId).select("name").lean() : null,
   ]);
   const flags = enquiryFlags({
     status: enquiry.stage as EnquiryStatus,
@@ -186,7 +219,7 @@ export async function getEnquiry(id: string) {
     now: new Date(),
     staleDays: commercial.staleEnquiryDays,
   });
-  return { enquiry, client, eventType, source, owner, spaces, lostReason, visits, flags };
+  return { enquiry, client, eventType, source, owner, spaces, lostReason, visits, flags, requestedServices, referrer };
 }
 
 export async function updateEnquiry(actor: SessionUser, id: string, patch: Partial<EnquiryInput>) {
@@ -513,4 +546,60 @@ export async function saveCatalog(
     newValue: { name: created.name },
   });
   return sid(created._id);
+}
+
+export async function listPipeline() {
+  await connectDB();
+  const now = new Date();
+  const weekAhead = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const [active, closed, types, sources, owners, visitsThisWeek, quotesWaiting] = await Promise.all([
+    Enquiry.find({ archivedAt: null, stage: { $in: [...ENQUIRY_STAGES] } }).sort({ nextActionAt: 1, updatedAt: -1 }).limit(200).lean(),
+    Enquiry.find({ archivedAt: null, stage: { $in: [...ENQUIRY_EXITS] } }).sort({ updatedAt: -1 }).limit(40).lean(),
+    EventType.find().select("name").lean(),
+    LeadSource.find().select("name").lean(),
+    User.find({ archivedAt: null }).select("name").sort({ name: 1 }).lean(),
+    SiteVisit.countDocuments({ archivedAt: null, status: { $in: ["scheduled", "rescheduled"] }, scheduledAt: { $gte: now, $lte: weekAhead } }),
+    Quotation.countDocuments({ archivedAt: null, status: { $in: ["sent", "viewed"] } }),
+  ]);
+  const enquiries = [...active, ...closed];
+  const quotes = await Quotation.find({ enquiryId: { $in: enquiries.map((enquiry) => enquiry._id) }, archivedAt: null }).select("enquiryId currentVersion").lean();
+  const versions = quotes.length
+    ? await QuotationVersion.find({ $or: quotes.map((quote) => ({ quotationId: quote._id, version: quote.currentVersion })) }).select("quotationId version totalCents").lean()
+    : [];
+  const quoted = new Map(versions.map((version) => [`${version.quotationId}:${version.version}`, version.totalCents || 0]));
+  const quoteValue = new Map<string, number>();
+  for (const quote of quotes) quoteValue.set(sid(quote.enquiryId), quoted.get(`${quote._id}:${quote.currentVersion}`) || 0);
+  const typeName = new Map(types.map((type) => [sid(type._id), type.name]));
+  const sourceName = new Map(sources.map((source) => [sid(source._id), source.name]));
+  const ownerName = new Map(owners.map((owner) => [sid(owner._id), owner.name]));
+  const cards = enquiries.map((enquiry) => {
+    const company = enquiry.contact?.organization || "";
+    const person = enquiry.contact?.fullName || "Unnamed enquiry";
+    const date = enquiry.preferredDate ? new Date(enquiry.preferredDate) : null;
+    return {
+      id: sid(enquiry._id),
+      reference: enquiry.reference,
+      title: company || person,
+      eventType: typeName.get(sid(enquiry.eventTypeId)) || "Event",
+      source: sourceName.get(sid(enquiry.sourceId)) || "",
+      date: date ? date.toISOString() : null,
+      month: date ? new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Nairobi", year: "numeric", month: "2-digit" }).format(date) : "",
+      guests: enquiry.estimatedGuests || null,
+      valueCents: quoteValue.get(sid(enquiry._id)) || enquiry.estimatedValueCents || 0,
+      owner: enquiry.ownerId ? ownerName.get(sid(enquiry.ownerId)) || "" : "",
+      ownerId: enquiry.ownerId ? sid(enquiry.ownerId) : "",
+      nextAction: enquiry.nextAction || "",
+      nextActionAt: enquiry.nextActionAt ? new Date(enquiry.nextActionAt).toISOString() : null,
+      stage: enquiry.stage as EnquiryStatus,
+      priority: enquiry.priority || "normal",
+    };
+  });
+  return {
+    cards,
+    owners: owners.map((owner) => ({ id: sid(owner._id), name: owner.name })),
+    eventTypes: [...new Set(cards.map((card) => card.eventType))].filter(Boolean).sort(),
+    sources: [...new Set(cards.map((card) => card.source))].filter(Boolean).sort(),
+    visitsThisWeek,
+    quotesWaiting,
+  };
 }

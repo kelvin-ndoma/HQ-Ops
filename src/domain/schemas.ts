@@ -220,13 +220,24 @@ export const costSchema = z.object({
   vendorId: z.string().optional().or(z.literal("")),
 });
 
-export const userSchema = z.object({
-  name: z.string().trim().min(2),
-  email: z.email(),
+export const inviteUserSchema = z.object({
+  name: z.string().trim().min(2, "Enter the person's name."),
+  email: z.email("Enter a valid email address."),
   phone: optionalText,
-  role: z.enum(["super_admin", "leadership", "operations_lead", "sales_coordinator", "event_staff", "finance", "administrator"]),
-  password: z.string().min(10, "Use at least 10 characters."),
+  jobTitle: optionalText,
+  role: z.enum(["leadership", "operations_lead", "sales_coordinator", "event_staff", "finance", "administrator", "super_admin"]),
 });
+
+export const acceptInviteSchema = z
+  .object({
+    token: z.string().min(20),
+    name: z.string().trim().min(2, "Enter your name."),
+    phone: optionalText,
+    jobTitle: optionalText,
+    password: z.string().min(10, "Use at least 10 characters."),
+    confirmPassword: z.string().min(10),
+  })
+  .refine((value) => value.password === value.confirmPassword, { message: "The passwords do not match.", path: ["confirmPassword"] });
 
 export const loginSchema = z.object({
   email: z.email(),

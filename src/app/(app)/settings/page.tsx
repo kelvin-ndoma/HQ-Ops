@@ -1,11 +1,11 @@
 import { can } from "@/domain/permissions";
 import { PageHeader } from "@/components/page";
-import { AutomationForm, CatalogEditor, CommercialForm, NotificationPrefs, OrganizationForm, UserAdmin } from "@/components/forms/settings-forms";
+import Link from "next/link";
+import { AutomationForm, CatalogEditor, CommercialForm, NotificationPrefs, OrganizationForm } from "@/components/forms/settings-forms";
 import { requirePermission, requireUser } from "@/server/guard";
 import { EventType, InventoryCategory, LeadSource, LostReason, PaymentMethod, ServiceItem, Space, VendorCategory } from "@/server/models";
 import { getAutomation, getCommercial, getNotificationSettings, getOrganization } from "@/server/settings";
 import { listUsers } from "@/server/services/users";
-import type { Role } from "@/domain/permissions";
 
 export default async function SettingsPage() {
   const user = await requireUser();
@@ -50,7 +50,7 @@ export default async function SettingsPage() {
         <div><h2 className="mb-2 font-medium">Payment methods</h2>{commercialAccess ? <CatalogEditor kind="payment-method" rows={rows(methods)} /> : null}</div>
         <div><h2 className="mb-2 font-medium">Service catalogue</h2>{commercialAccess ? <CatalogEditor kind="service" rows={services.map((service) => ({ id: String(service._id), name: service.name, extra: `KSh ${service.unitPriceCents / 100}` }))} /> : null}</div>
       </section>
-      {can(user.role, "users.manage") ? <section><h2 className="mb-3 font-medium">Users and roles</h2><UserAdmin users={users.map((person) => ({ id: String(person._id), name: person.name, email: person.email, role: person.role as Role, active: person.active }))} /></section> : null}
+      {can(user.role, "users.read") ? <section><h2 className="mb-3 font-medium">Users and access</h2><p className="mb-3 text-sm text-muted-foreground">{users.length} people. Invitations, roles and access live on their own page.</p><Link className="text-sm underline" href="/settings/users">Open users and access</Link></section> : null}
     </div>
   );
 }

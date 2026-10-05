@@ -10,6 +10,13 @@ import { requirePermission, requireUser } from "@/server/guard";
 import { ActivityEvent, LostReason } from "@/server/models";
 import { getEnquiry } from "@/server/services/crm";
 
+function budgetText(min?: number | null, max?: number | null) {
+  if (min == null && max == null) return "—";
+  if (min != null && max != null) return `${formatKsh(min)} – ${formatKsh(max)}`;
+  if (max == null) return `From ${formatKsh(min || 0)}`;
+  return `Up to ${formatKsh(max)}`;
+}
+
 export default async function EnquiryDetail({ params }: { params: Promise<{ id: string }> }) {
   const user = await requireUser();
   requirePermission(user, "enquiries.read");
@@ -41,14 +48,17 @@ export default async function EnquiryDetail({ params }: { params: Promise<{ id: 
         <dl className="grid gap-3 text-sm sm:grid-cols-2">
           <div><dt className="text-muted-foreground">Phone</dt><dd>{enquiry.contact?.phone}</dd></div>
           <div><dt className="text-muted-foreground">Email</dt><dd>{enquiry.contact?.email || "—"}</dd></div>
-          <div><dt className="text-muted-foreground">Event</dt><dd>{data.eventType?.name || "—"} · {formatWhen(enquiry.preferredDate)}</dd></div>
+          <div><dt className="text-muted-foreground">Event</dt><dd>{data.eventType?.name || "—"} · {formatWhen(enquiry.preferredDate)}{enquiry.startTime ? ` · ${enquiry.startTime}${enquiry.endTime ? `–${enquiry.endTime}` : ""}` : ""}{enquiry.alternativeDate ? ` · alt ${formatWhen(enquiry.alternativeDate)}` : ""}</dd></div>
           <div><dt className="text-muted-foreground">Guests</dt><dd>{enquiry.estimatedGuests || "—"}</dd></div>
           <div><dt className="text-muted-foreground">Value</dt><dd>{formatKsh(enquiry.estimatedValueCents || 0)}</dd></div>
           <div><dt className="text-muted-foreground">Owner</dt><dd>{data.owner?.name || "Unassigned"}</dd></div>
           <div><dt className="text-muted-foreground">Next action</dt><dd>{enquiry.nextAction || "—"} · {formatWhen(enquiry.nextActionAt, "Africa/Nairobi", true)}</dd></div>
-          <div><dt className="text-muted-foreground">Source</dt><dd>{data.source?.name}{enquiry.referralDetail ? ` · ${enquiry.referralDetail}` : ""}</dd></div>
+          <div><dt className="text-muted-foreground">Source</dt><dd>{data.source?.name || "Unknown"}{enquiry.origin === "public_form" ? " — Public Form" : ""}{enquiry.referralDetail ? ` · ${enquiry.referralDetail}` : ""}</dd></div>
+          <div><dt className="text-muted-foreground">Budget</dt><dd>{budgetText(enquiry.budgetMinCents, enquiry.budgetMaxCents)}</dd></div>
           <div className="sm:col-span-2"><dt className="text-muted-foreground">Spaces</dt><dd>{data.spaces.map((space) => space.name).join(", ") || "—"}</dd></div>
-          <div className="sm:col-span-2"><dt className="text-muted-foreground">Requirements</dt><dd>{enquiry.requirements || "—"}</dd></div>
+          <div className="sm:col-span-2"><dt className="text-muted-foreground">Requested services</dt><dd>{data.requestedServices.map((item) => item.name).join(", ") || "—"}</dd></div>
+          <div className="sm:col-span-2"><dt className="text-muted-foreground">Experience</dt><dd>{enquiry.experience || enquiry.requirements || "—"}</dd></div>
+          {enquiry.origin === "public_form" ? <div className="sm:col-span-2"><dt className="text-muted-foreground">Attribution</dt><dd>{[enquiry.attribution?.campaign, data.referrer?.name, enquiry.attribution?.submittedAt ? formatWhen(enquiry.attribution.submittedAt, "Africa/Nairobi", true) : ""].filter(Boolean).join(" · ") || "Public form"}</dd></div> : null}
         </dl>
         {data.lostReason ? <p className="mt-4 text-sm">Lost: {data.lostReason.name}. {enquiry.lostNotes}</p> : null}
         <h2 className="mt-8 font-medium">Timeline</h2>

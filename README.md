@@ -9,11 +9,13 @@ cp .env.example .env.local
 npm run dev:local
 ```
 
-`dev:local` starts an in-memory MongoDB replica set, seeds it when the database is empty, and starts Next.js. Sign in as `wanjiku@hq.local` with `ChangeMe-HQ-2026` (or `SEED_PASSWORD`).
+`dev:local` starts an in-memory MongoDB replica set, seeds it when the database is empty, and starts Next.js. The seed is development data only and refuses to run when `NODE_ENV` is `production`. Sign in as `wanjiku@hq.local` with `ChangeMe-HQ-2026` (or `SEED_PASSWORD`).
 
-Other development accounts, same password: `amina@hq.local` (leadership), `david@hq.local` (operations), `brian@hq.local` (event staff), `faith@hq.local` (finance), `samuel@hq.local` (administrator).
+Other development accounts, same password: `amina@hq.local` (leadership), `david@hq.local` (operations), `brian@hq.local` (event staff), `faith@hq.local` (finance), `samuel@hq.local` (administrator). `njeri.abdi@hq.local` is an unused invitation.
 
-To use your own MongoDB, set `MONGODB_URI` to a replica set and run `npm run seed`, then `npm run dev`. Transactions need a replica set. A standalone server still runs, but multi-document updates are no longer atomic.
+The first production administrator is created with `bootstrap-admin` and `SEED_ADMIN_PASSWORD`. That path does not load the development password or the demo company records.
+
+To use your own MongoDB, set `MONGODB_URI` to a replica set and run `npm run dev`. `npm run seed` loads demo data only when the database has no users. If a bootstrap administrator already exists, that command leaves the database unchanged, which is why a pipeline can stay empty. `npm run seed:reset` rebuilds the development dataset, keeps super-admin accounts, and prints the record counts. It refuses to run when `NODE_ENV` is `production`. Transactions need a replica set. A standalone server still runs, but multi-document updates are no longer atomic.
 
 ## Checks
 

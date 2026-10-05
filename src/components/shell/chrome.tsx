@@ -27,7 +27,8 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { ROLE_LABELS, type Role } from "@/domain/permissions";
 import { useRouter } from "next/navigation";
 import { NAV, QUICK_CREATE, type NavItem } from "@/components/nav";
 import { Button } from "@/components/ui/button";
@@ -74,6 +75,63 @@ function NavLinks({ items, pathname, onNavigate }: { items: NavItem[]; pathname:
   );
 }
 
+function ProfileMenu({ name, email, role }: { name: string; email: string; role: string }) {
+  const [open, setOpen] = useState(false);
+  const panel = useRef<HTMLDivElement>(null);
+  const label = ROLE_LABELS[role as Role] || role;
+  const initials = name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() || "").join("") || "HQ";
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => {
+      if (!panel.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative" ref={panel}>
+      <button
+        type="button"
+        className="flex h-9 items-center gap-2 rounded-full border border-border bg-card pl-0.5 pr-3 hover:bg-muted"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-medium leading-none text-primary-foreground">{initials}</span>
+        <span className="hidden max-w-[9rem] truncate text-sm sm:inline">{name}</span>
+      </button>
+      {open ? (
+        <div className="absolute right-0 top-11 z-40 w-72 rounded-lg border border-border bg-card p-2 shadow-lg" role="menu">
+          <div className="flex items-center gap-3 px-2 py-2">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-medium text-primary-foreground">{initials}</span>
+            <div className="min-w-0">
+              <p className="truncate font-medium">{name}</p>
+              <p className="truncate text-sm text-muted-foreground">{email}</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">{label}</p>
+            </div>
+          </div>
+          <div className="my-1 border-t border-border" />
+          <a href="/account" className="block rounded-md px-2 py-2 text-sm hover:bg-muted" role="menuitem" onClick={() => setOpen(false)}>Account and password</a>
+          <form action="/api/auth/logout" method="post">
+            <button className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-muted" type="submit" role="menuitem">
+              <LogOut className="h-4 w-4" /> Sign out
+            </button>
+          </form>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function Chrome({
   user,
   unread,
@@ -82,7 +140,7 @@ export function Chrome({
   pathname,
   children,
 }: {
-  user: { name: string; role: string };
+  user: { name: string; email: string; role: string };
   unread: number;
   items: NavItem[];
   quick: { href: string; label: string }[];
@@ -117,8 +175,6 @@ export function Chrome({
     return () => clearTimeout(handle);
   }, [query]);
 
-  const role = useMemo(() => user.role.replaceAll("_", " "), [user.role]);
-
   return (
     <div className="min-h-screen">
       <aside className="no-print fixed inset-y-0 left-0 z-20 hidden w-[240px] flex-col overflow-y-auto bg-sidebar text-sidebar-foreground md:flex">
@@ -137,27 +193,20 @@ export function Chrome({
           <button className="rounded-md p-2 md:hidden" onClick={() => setOpen(true)} aria-label="Open navigation">
             <Menu className="h-5 w-5" />
           </button>
-          <button className="flex h-9 flex-1 items-center gap-2 rounded-md border border-border bg-card px-3 text-left text-sm text-muted-foreground md:max-w-md" onClick={() => setSearchOpen(true)}>
-            <Search className="h-4 w-4" />
-            Search clients, phone, references
+          <button className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-md border border-border bg-card px-3 text-left text-sm text-muted-foreground md:max-w-md" onClick={() => setSearchOpen(true)}>
+            <Search className="h-4 w-4 shrink-0" />
+            <span className="truncate">Search clients, phone, references</span>
           </button>
-          <Button size="sm" variant="secondary" onClick={() => setCreateOpen(true)}>
-            <Plus className="h-4 w-4" /> Quick Create
-          </Button>
-          <a href="/notifications" className="relative rounded-md p-2 hover:bg-muted" aria-label="Notifications">
-            <Bell className="h-4 w-4" />
-            {unread > 0 ? <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-destructive" /> : null}
-          </a>
-          <a href="/account" className="rounded-md px-2 py-1 text-sm hover:bg-muted">Password</a>
-          <form action="/api/auth/logout" method="post">
-            <button className="flex items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-muted" title="Sign out">
-              <span className="hidden text-sm sm:block">
-                <span className="block leading-tight">{user.name}</span>
-                <span className="block text-[11px] capitalize text-muted-foreground">{role}</span>
-              </span>
-              <LogOut className="h-4 w-4" />
-            </button>
-          </form>
+          <div className="ml-auto flex items-center gap-2">
+            <Button size="sm" variant="secondary" onClick={() => setCreateOpen(true)}>
+              <Plus className="h-4 w-4" /> <span className="hidden sm:inline">Quick Create</span>
+            </Button>
+            <a href="/notifications" className="relative flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted" aria-label="Notifications">
+              <Bell className="h-4 w-4" />
+              {unread > 0 ? <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-destructive" /> : null}
+            </a>
+            <ProfileMenu name={user.name} email={user.email} role={user.role} />
+          </div>
         </header>
         <main className="mx-auto w-full max-w-[1440px] px-3 py-5 md:px-6">{children}</main>
       </div>

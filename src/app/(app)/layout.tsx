@@ -35,7 +35,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   });
   const quick = QUICK_CREATE.filter((item) => can(user.role, item.permission));
   return (
-    <Chrome user={{ name: user.name, role: user.role }} unread={unread} items={items} quick={quick} pathname={pathname}>
+    <Chrome user={{ name: user.name, email: user.email, role: user.role }} unread={unread} items={items} quick={quick} pathname={pathname}>
       {children}
     </Chrome>
   );

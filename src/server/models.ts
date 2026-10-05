@@ -15,11 +15,16 @@ const UserSchema = new Schema(
     name: { type: String, required: true, trim: true },
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     phone: { type: String, default: "" },
-    passwordHash: { type: String, required: true },
+    passwordHash: { type: String, default: "" },
     role: { type: String, required: true, index: true },
+    jobTitle: { type: String, default: "" },
+    status: { type: String, enum: ["invited", "active", "suspended", "deactivated"], default: "active", index: true },
     active: { type: Boolean, default: true, index: true },
     tokenVersion: { type: Number, default: 0 },
+    invitedAt: Date,
+    joinedAt: Date,
     lastLoginAt: Date,
+    createdBy: { type: Schema.Types.ObjectId, ref: "User" },
     archivedAt: { type: Date, default: null, index: true },
   },
   { timestamps: true },
@@ -106,6 +111,17 @@ const EnquirySchema = new Schema(
     notes: { type: String, default: "" },
     sourceId: { type: Schema.Types.ObjectId, ref: "LeadSource", index: true },
     referralDetail: { type: String, default: "" },
+    origin: { type: String, default: "internal", index: true },
+    experience: { type: String, default: "" },
+    requestedServiceIds: [{ type: Schema.Types.ObjectId, ref: "ServiceItem" }],
+    attribution: {
+      campaign: { type: String, default: "" },
+      linkId: { type: Schema.Types.ObjectId, ref: "EnquiryLink" },
+      staffId: { type: Schema.Types.ObjectId, ref: "User" },
+      submittedAt: Date,
+      consentAt: Date,
+      consentVersion: { type: String, default: "" },
+    },
     ownerId: { type: Schema.Types.ObjectId, ref: "User", index: true },
     stage: { type: String, required: true, index: true },
     lostReasonId: { type: Schema.Types.ObjectId, ref: "LostReason" },
@@ -121,6 +137,8 @@ const EnquirySchema = new Schema(
   },
   { timestamps: true },
 );
+
+EnquirySchema.index({ archivedAt: 1, stage: 1, updatedAt: -1 });
 
 const SiteVisitSchema = new Schema(
   {
@@ -505,6 +523,32 @@ const OverrideSchema = new Schema(
   { versionKey: false },
 );
 
+const EnquiryLinkSchema = new Schema(
+  {
+    token: { type: String, required: true, unique: true, index: true },
+    sourceId: { type: Schema.Types.ObjectId, ref: "LeadSource", required: true, index: true },
+    campaign: { type: String, default: "" },
+    staffId: { type: Schema.Types.ObjectId, ref: "User" },
+    active: { type: Boolean, default: true, index: true },
+    createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } },
+);
+
+const InvitationSchema = new Schema(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    email: { type: String, required: true, index: true },
+    tokenHash: { type: String, required: true, unique: true },
+    devPreviewUrl: { type: String, default: "" },
+    expiresAt: { type: Date, required: true, index: true },
+    usedAt: { type: Date, default: null },
+    revokedAt: { type: Date, default: null },
+    createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } },
+);
+
 const CounterSchema = new Schema({
   key: { type: String, required: true, unique: true },
   seq: { type: Number, default: 0 },
@@ -515,6 +559,7 @@ function register(name: string, schema: Schema) {
 }
 
 export const User = register("User", UserSchema);
+export const Invitation = register("Invitation", InvitationSchema);
 export const Client = register("Client", ClientSchema);
 export const EventType = register("EventType", catalogSchema());
 export const LeadSource = register("LeadSource", catalogSchema());
@@ -525,6 +570,7 @@ export const PaymentMethod = register("PaymentMethod", catalogSchema());
 export const Space = register("Space", SpaceSchema);
 export const ServiceItem = register("ServiceItem", ServiceItemSchema);
 export const Enquiry = register("Enquiry", EnquirySchema);
+export const EnquiryLink = register("EnquiryLink", EnquiryLinkSchema);
 export const SiteVisit = register("SiteVisit", SiteVisitSchema);
 export const Quotation = register("Quotation", QuotationSchema);
 export const QuotationVersion = register("QuotationVersion", QuotationVersionSchema);

@@ -24,7 +24,6 @@ import {
   stageSchema,
   stockMoveSchema,
   taskSchema,
-  userSchema,
   vendorSchema,
   visitOutcomeSchema,
   visitSchema,
@@ -36,10 +35,8 @@ import { EventType, InventoryCategory, LeadSource, LostReason, PaymentMethod, Se
 import { cancelBooking, confirmBooking, createBooking, createQuotation, extendHold, recordPaymentAndMaybeConfirm, requestHoldExtension, reviseQuotation, setQuotationStatus } from "./services/commercial";
 import { addEventCost, assignVendor, createProcurement, createTask, createVendor, setProcurementStatus, setTaskStatus, setVendorAssignment, toggleCloseout, updateEvent } from "./services/events";
 import { createItem, issueReserved, moveStock, reserveForEvent, returnIssued } from "./services/inventory";
-import { createManagedUser, updateManagedUser } from "./services/users";
 import { saveSetting, getCommercial, getOrganization, getAutomation, getNotificationSettings, getAssignment } from "./settings";
 import type { EventStatus, ProcurementStatus, QuoteStatus, TaskStatus, VendorAssignmentStatus } from "../domain/states";
-import type { Role } from "../domain/permissions";
 import { Notification } from "./models";
 
 function fail(error: unknown): ActionResult<never> {
@@ -516,31 +513,6 @@ export async function saveRequirementsAction(eventId: string, requirements: { la
     requirePermission(user, "events.write");
     await updateEvent(user, eventId, { requirements, notes });
     revalidatePath(`/events/${eventId}`);
-    return done();
-  } catch (error) {
-    return fail(error);
-  }
-}
-
-export async function createUserAction(input: unknown) {
-  const user = await requireUser();
-  try {
-    requirePermission(user, "users.manage");
-    const parsed = userSchema.parse(input);
-    await createManagedUser(user, parsed);
-    revalidatePath("/settings");
-    return done();
-  } catch (error) {
-    return fail(error);
-  }
-}
-
-export async function updateUserAction(id: string, role: Role, active: boolean) {
-  const user = await requireUser();
-  try {
-    requirePermission(user, "users.manage");
-    await updateManagedUser(user, id, { role, active });
-    revalidatePath("/settings");
     return done();
   } catch (error) {
     return fail(error);

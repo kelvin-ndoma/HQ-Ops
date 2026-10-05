@@ -5,6 +5,7 @@ import { ENQUIRY_STATUS_LABELS } from "@/domain/states";
 import { DataRows, PageHeader } from "@/components/page";
 import { StatusPill } from "@/components/status-pill";
 import { Button } from "@/components/ui/button";
+import { can } from "@/domain/permissions";
 import { requirePermission, requireUser } from "@/server/guard";
 import { listEnquiries, listStaff } from "@/server/services/crm";
 
@@ -18,7 +19,7 @@ export default async function EnquiriesPage({ searchParams }: { searchParams: Pr
   ]);
   return (
     <div>
-      <PageHeader eyebrow="Sales" title="Enquiries" description="Every WhatsApp, call, walk-in and form becomes a record with an owner and a next action." actions={<Button asChild><Link href="/enquiries/new">New enquiry</Link></Button>} />
+      <PageHeader eyebrow="Sales" title="Enquiries" description="Every WhatsApp, call, walk-in and form becomes a record with an owner and a next action." actions={<>{can(user.role, "enquiries.write") ? <Button asChild variant="secondary"><Link href="/enquiries/share">Share enquiry form</Link></Button> : null}<Button asChild><Link href="/enquiries/new">New enquiry</Link></Button></>} />
       <form className="mb-4 grid gap-2 sm:grid-cols-4">
         <input name="q" defaultValue={params.q} placeholder="Name, phone, reference" className="h-9 rounded-md border border-border bg-card px-3 text-sm" />
         <select name="stage" defaultValue={params.stage || ""} className="h-9 rounded-md border border-border bg-card px-2 text-sm">
@@ -42,7 +43,7 @@ export default async function EnquiriesPage({ searchParams }: { searchParams: Pr
           href: `/enquiries/${row._id}`,
           cells: {
             ref: row.reference,
-            client: row.contact?.fullName || "—",
+            client: `${row.contact?.fullName || "—"}${row.origin === "public_form" ? " · Public form" : ""}`,
             stage: <StatusPill value={row.stage} label={ENQUIRY_STATUS_LABELS[row.stage as keyof typeof ENQUIRY_STATUS_LABELS]} />,
             when: formatWhen(row.preferredDate),
             value: formatKsh(row.estimatedValueCents || 0),

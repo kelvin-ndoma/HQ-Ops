@@ -5,7 +5,9 @@ export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-hq-path", pathname);
-  if (pathname.startsWith("/login") || pathname.startsWith("/api/auth") || pathname.startsWith("/api/automation")) {
+  const publicEnquiry = pathname === "/enquire" || pathname.startsWith("/enquire/");
+  const invitation = pathname === "/accept-invite" || pathname.startsWith("/accept-invite/");
+  if (publicEnquiry || invitation || pathname.startsWith("/login") || pathname.startsWith("/api/auth") || pathname.startsWith("/api/automation")) {
     return NextResponse.next({ request: { headers: requestHeaders } });
   }
   const token = request.cookies.get("hq_session")?.value;

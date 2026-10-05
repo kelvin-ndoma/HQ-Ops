@@ -2,8 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { createUserAction, saveAutomationAction, saveCatalogAction, saveCommercialAction, saveNotificationPrefsAction, saveOrganizationAction, updateUserAction } from "@/server/actions";
-import { ROLE_LABELS, ROLES, type Role } from "@/domain/permissions";
+import { saveAutomationAction, saveCatalogAction, saveCommercialAction, saveNotificationPrefsAction, saveOrganizationAction } from "@/server/actions";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/field";
 
@@ -78,8 +77,14 @@ export function OrganizationForm({ value }: { value: { name: string; legalName: 
       });
       router.refresh();
     }}>
-      {(["name", "legalName", "address", "city", "phone", "email", "website"] as const).map((key) => <Field key={key} label={key}><Input name={key} defaultValue={value[key]} /></Field>)}
-      <Button type="submit">Save organisation</Button>
+      <Field label="Trading name"><Input name="name" defaultValue={value.name} /></Field>
+      <Field label="Legal name"><Input name="legalName" defaultValue={value.legalName} /></Field>
+      <Field label="Street address"><Input name="address" defaultValue={value.address} /></Field>
+      <Field label="City"><Input name="city" defaultValue={value.city} /></Field>
+      <Field label="Phone"><Input name="phone" defaultValue={value.phone} /></Field>
+      <Field label="Email"><Input name="email" type="email" defaultValue={value.email} /></Field>
+      <Field label="Website"><Input name="website" defaultValue={value.website} /></Field>
+      <div className="md:col-span-2"><Button type="submit">Save organisation</Button></div>
     </form>
   );
 }
@@ -100,7 +105,12 @@ export function AutomationForm({ value }: { value: { newEnquiryFollowUpHours: nu
       });
       router.refresh();
     }}>
-      {Object.entries(value).map(([key, current]) => <Field key={key} label={key}><Input name={key} type="number" defaultValue={current} /></Field>)}
+      <Field label="First contact (hours)"><Input name="newEnquiryFollowUpHours" type="number" defaultValue={value.newEnquiryFollowUpHours} /></Field>
+      <Field label="Visit reminder (hours)"><Input name="visitReminderHours" type="number" defaultValue={value.visitReminderHours} /></Field>
+      <Field label="After a visit (hours)"><Input name="postVisitFollowUpHours" type="number" defaultValue={value.postVisitFollowUpHours} /></Field>
+      <Field label="Quote follow-up (days)"><Input name="quoteFollowUpDays" type="number" defaultValue={value.quoteFollowUpDays} /></Field>
+      <Field label="Quiet quote (days)"><Input name="quoteInactivityDays" type="number" defaultValue={value.quoteInactivityDays} /></Field>
+      <Field label="Deposit follow-up (days)"><Input name="depositFollowUpDays" type="number" defaultValue={value.depositFollowUpDays} /></Field>
       <p className="md:col-span-2 text-xs text-muted-foreground">Preparation task offsets stay on the saved automation record and can be edited by an administrator in the database setting. The timings above are the follow-up clocks.</p>
       <Button type="submit">Save timings</Button>
     </form>
@@ -149,47 +159,6 @@ export function CatalogEditor({ kind, rows }: { kind: "event-type" | "source" | 
         {kind === "space" ? <Input name="capacity" type="number" placeholder="Capacity" /> : null}
         {kind === "service" ? <Input name="price" type="number" placeholder="Price KSh" /> : null}
         <Button type="submit" variant="secondary">Add</Button>
-      </form>
-    </div>
-  );
-}
-
-export function UserAdmin({ users }: { users: { id: string; name: string; email: string; role: Role; active: boolean }[] }) {
-  const router = useRouter();
-  const [error, setError] = useState("");
-  return (
-    <div className="space-y-4">
-      <ul className="space-y-2 text-sm">
-        {users.map((person) => (
-          <li key={person.id} className="flex flex-wrap items-center gap-2">
-            <span className="min-w-40">{person.name}</span>
-            <span className="text-muted-foreground">{person.email}</span>
-            <Select defaultValue={person.role} onChange={async (event) => { await updateUserAction(person.id, event.target.value as Role, person.active); router.refresh(); }}>
-              {ROLES.map((role) => <option key={role} value={role}>{ROLE_LABELS[role]}</option>)}
-            </Select>
-          </li>
-        ))}
-      </ul>
-      <form className="grid gap-2 md:grid-cols-2" onSubmit={async (event) => {
-        event.preventDefault();
-        const form = new FormData(event.currentTarget);
-        const result = await createUserAction({
-          name: String(form.get("name")),
-          email: String(form.get("email")),
-          phone: String(form.get("phone") || ""),
-          role: String(form.get("role")),
-          password: String(form.get("password")),
-        });
-        if (!result.ok) setError(result.error);
-        else router.refresh();
-      }}>
-        <Input name="name" placeholder="Name" required />
-        <Input name="email" type="email" placeholder="Email" required />
-        <Input name="phone" placeholder="Phone" />
-        <Select name="role">{ROLES.map((role) => <option key={role} value={role}>{ROLE_LABELS[role]}</option>)}</Select>
-        <Input name="password" type="password" placeholder="Temporary password" required />
-        <Button type="submit">Add user</Button>
-        {error ? <p className="text-sm text-destructive">{error}</p> : null}
       </form>
     </div>
   );

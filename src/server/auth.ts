@@ -81,7 +81,7 @@ export async function authenticate(email: string, password: string) {
   await connectDB();
   const user = await User.findOne({ email: email.toLowerCase(), archivedAt: null });
   const matches = user ? await verifyPassword(password, user.passwordHash) : false;
-  if (!user || !user.active || !matches) {
+  if (!user || user.status !== "active" || !user.active || !user.passwordHash || !matches) {
     registerFailure(email);
     throw new AppError("Those details do not match an active account.");
   }
@@ -131,6 +131,12 @@ export async function clearSessionCookie() {
   jar.delete(COOKIE);
 }
 
+export function isSessionCurrent(user: { active: boolean; archivedAt?: Date | null; tokenVersion: number; status?: string | null }, tokenVersion: number) {
+  const status = user.status || (user.active ? "active" : "deactivated");
+  if (!user.active || user.archivedAt || status !== "active") return false;
+  return user.tokenVersion === tokenVersion;
+}
+
 export async function getCurrentUser(): Promise<SessionUser | null> {
   const jar = await cookies();
   const token = jar.get(COOKIE)?.value;
@@ -140,8 +146,7 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
     if (!payload.sub || !isRole(String(payload.role))) return null;
     await connectDB();
     const user = await User.findById(payload.sub);
-    if (!user || !user.active || user.archivedAt) return null;
-    if (user.tokenVersion !== payload.tv) return null;
+    if (!user || !isSessionCurrent(user, Number(payload.tv))) return null;
     return { id: String(user._id), name: user.name, email: user.email, role: user.role as Role };
   } catch {
     return null;
